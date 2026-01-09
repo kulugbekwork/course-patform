@@ -22,10 +22,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     
+    // Safety timeout to ensure loading is set to false even if getSession hangs
+    const safetyTimeout = setTimeout(() => {
+      if (!cancelled) {
+        console.warn('Session check timeout - setting loading to false');
+        setLoading(false);
+      }
+    }, 5000);
+    
     const checkSession = async () => {
       try {
         console.log('Checking session...');
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        
+        clearTimeout(safetyTimeout);
         
         if (cancelled) {
           setLoading(false);
@@ -69,6 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       } catch (error) {
         console.error('Error checking session:', error);
+        clearTimeout(safetyTimeout);
         if (!cancelled) {
           setLoading(false);
         }
@@ -96,6 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
       subscription.unsubscribe();
+      clearTimeout(safetyTimeout);
     };
   }, []);
 
