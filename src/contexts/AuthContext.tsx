@@ -22,25 +22,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     
-    // Safety timeout to ensure loading is set to false even if getSession hangs
-    const safetyTimeout = setTimeout(() => {
-      if (!cancelled) {
-        console.warn('Session check timeout - setting loading to false');
-        setLoading(false);
-      }
-    }, 5000);
-    
     const checkSession = async () => {
       try {
         console.log('Checking session...');
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         
-        clearTimeout(safetyTimeout);
-        
-        if (cancelled) {
-          setLoading(false);
-          return;
-        }
+        if (cancelled) return;
         
         if (sessionError) {
           console.error('Session error:', sessionError);
@@ -57,36 +44,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             .eq('id', session.user.id)
             .maybeSingle();
           
-          if (cancelled) {
-            setLoading(false);
-            return;
-          }
+          if (cancelled) return;
           
           if (profileError) {
             console.error('Profile error:', profileError);
-            setLoading(false);
           } else if (data) {
             console.log('Profile loaded:', data);
             setProfile(data);
-            setLoading(false);
           } else {
             console.log('No profile found for user');
-            setLoading(false);
           }
         } else {
           console.log('No session found');
-          setLoading(false);
         }
       } catch (error) {
         console.error('Error checking session:', error);
-        clearTimeout(safetyTimeout);
+        if (cancelled) return;
+      } finally {
         if (!cancelled) {
+          console.log('Setting loading to false');
           setLoading(false);
         }
       }
     };
     
     checkSession();
+    
+    return () => {
+      cancelled = true;
+    };
 
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
@@ -105,9 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => {
-      cancelled = true;
       subscription.unsubscribe();
-      clearTimeout(safetyTimeout);
     };
   }, []);
 
