@@ -270,7 +270,7 @@ export default function TestForm() {
       <div className="flex-1 max-w-4xl mx-auto w-full px-0 sm:px-4 sm:px-6 lg:px-8 py-4 sm:py-8">
         <div className="bg-white sm:rounded-xl sm:shadow-sm sm:border sm:border-gray-200">
           <div className="border-b border-gray-200 px-4 sm:px-6 py-4">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-0">
+            <div className="flex flex-col gap-3">
               <h2 className="text-xl sm:text-2xl font-bold text-black">
                 {id ? 'Edit Test' : 'Create New Test'}
               </h2>

@@ -69,10 +69,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
     
     checkSession();
-    
-    return () => {
-      cancelled = true;
-    };
 
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
@@ -91,6 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => {
+      cancelled = true;
       subscription.unsubscribe();
     };
   }, []);
