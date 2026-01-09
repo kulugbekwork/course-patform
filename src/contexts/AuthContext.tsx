@@ -27,7 +27,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.log('Checking session...');
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         
-        if (cancelled) return;
+        if (cancelled) {
+          setLoading(false);
+          return;
+        }
         
         if (sessionError) {
           console.error('Session error:', sessionError);
@@ -44,25 +47,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             .eq('id', session.user.id)
             .maybeSingle();
           
-          if (cancelled) return;
+          if (cancelled) {
+            setLoading(false);
+            return;
+          }
           
           if (profileError) {
             console.error('Profile error:', profileError);
+            setLoading(false);
           } else if (data) {
             console.log('Profile loaded:', data);
             setProfile(data);
+            setLoading(false);
           } else {
             console.log('No profile found for user');
+            setLoading(false);
           }
         } else {
           console.log('No session found');
+          setLoading(false);
         }
       } catch (error) {
         console.error('Error checking session:', error);
-        if (cancelled) return;
-      } finally {
         if (!cancelled) {
-          console.log('Setting loading to false');
           setLoading(false);
         }
       }
