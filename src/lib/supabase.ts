@@ -22,6 +22,7 @@ export interface Profile {
   updated_at: string;
   full_name?: string | null;
   initial_password?: string | null;
+  email?: string | null;
 }
 
 export interface Course {

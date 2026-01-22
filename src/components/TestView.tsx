@@ -41,7 +41,6 @@ export default function TestView() {
   const [test, setTest] = useState<Test | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [ratings, setRatings] = useState<TestRating[]>([]);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -84,7 +83,6 @@ export default function TestView() {
   };
 
   const loadTest = async () => {
-    setLoading(true);
     const { data: testData, error: fetchError } = await supabase
       .from('tests')
       .select('*')
@@ -94,7 +92,6 @@ export default function TestView() {
     if (fetchError) {
       setError('Failed to load test. Please try again.');
       console.error(fetchError);
-      setLoading(false);
       return;
     }
 
@@ -131,7 +128,6 @@ export default function TestView() {
         setQuestions(questionsWithVariants);
       }
     }
-    setLoading(false);
   };
 
   const handleStartTest = () => {
@@ -139,14 +135,6 @@ export default function TestView() {
     const basePath = profile?.role === 'student' ? '/student' : '/teacher';
     navigate(`${basePath}/test/${id}/take`);
   };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-gray-600">Loading...</div>
-      </div>
-    );
-  }
 
   if (!test) {
     return (

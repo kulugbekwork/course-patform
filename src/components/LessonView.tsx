@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { supabase, Course, Profile } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, CheckCircle } from 'lucide-react';
 
 interface CourseComment {
   id: string;
@@ -19,20 +19,24 @@ export default function LessonView() {
   const { profile } = useAuth();
   const [course, setCourse] = useState<Course | null>(null);
   const [comments, setComments] = useState<CourseComment[]>([]);
+  const [playlists, setPlaylists] = useState<any[]>([]);
   const [newComment, setNewComment] = useState('');
-  const [loading, setLoading] = useState(true);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [error, setError] = useState('');
+  const [completedPlaylists, setCompletedPlaylists] = useState<string[]>([]);
+  const [completing, setCompleting] = useState(false);
+  const [completionSuccess, setCompletionSuccess] = useState(false);
 
   useEffect(() => {
-    if (id) {
+    if (id && profile?.id) {
       loadLesson();
       loadComments();
+      loadPlaylists();
+      loadCompletionStatus();
     }
-  }, [id]);
+  }, [id, profile?.id]);
 
   const loadLesson = async () => {
-    setLoading(true);
     const { data, error: fetchError } = await supabase
       .from('courses')
       .select('*')
@@ -45,7 +49,6 @@ export default function LessonView() {
     } else if (data) {
       setCourse(data);
     }
-    setLoading(false);
   };
 
   const loadComments = async () => {
@@ -77,6 +80,136 @@ export default function LessonView() {
       }));
 
       setComments(commentsWithProfiles as CourseComment[]);
+    }
+  };
+
+  const loadPlaylists = async () => {
+    if (!id) return;
+    try {
+      const { data: coursePlaylists } = await supabase
+        .from('course_playlists')
+        .select('playlist_id')
+        .eq('course_id', id);
+
+      if (coursePlaylists && coursePlaylists.length > 0) {
+        const playlistIds = coursePlaylists.map(cp => cp.playlist_id);
+        const { data: playlistsData } = await supabase
+          .from('playlists')
+          .select('*')
+          .in('id', playlistIds)
+          .order('created_at', { ascending: false });
+
+        if (playlistsData) {
+          setPlaylists(playlistsData);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading playlists:', error);
+    }
+  };
+
+  const loadCompletionStatus = async () => {
+    if (!id || !profile?.id || profile?.role !== 'student') return;
+    
+    try {
+      // Get all playlists this course is in
+      const { data: coursePlaylists } = await supabase
+        .from('course_playlists')
+        .select('playlist_id')
+        .eq('course_id', id);
+
+      if (!coursePlaylists || coursePlaylists.length === 0) return;
+
+      const playlistIds = coursePlaylists.map(cp => cp.playlist_id);
+      
+      // Check completion status for each playlist
+      const { data: progressData } = await supabase
+        .from('playlist_student_progress')
+        .select('playlist_id, completed_test_ids')
+        .in('playlist_id', playlistIds)
+        .eq('student_id', profile.id);
+
+      if (progressData) {
+        const completed = progressData
+          .filter(p => p.completed_test_ids?.includes(id))
+          .map(p => p.playlist_id);
+        setCompletedPlaylists(completed);
+      }
+    } catch (error) {
+      console.error('Error loading completion status:', error);
+    }
+  };
+
+  const handleCompleteLesson = async () => {
+    if (!id || !profile?.id || profile?.role !== 'student' || completing) return;
+
+    setCompleting(true);
+    setError('');
+
+    try {
+      // Get all playlists this course is in
+      const { data: coursePlaylists } = await supabase
+        .from('course_playlists')
+        .select('playlist_id')
+        .eq('course_id', id);
+
+      if (!coursePlaylists || coursePlaylists.length === 0) {
+        setError('This lesson is not part of any playlist.');
+        setCompleting(false);
+        return;
+      }
+
+      // Update progress for each playlist
+      for (const cp of coursePlaylists) {
+        const { data: existingProgress } = await supabase
+          .from('playlist_student_progress')
+          .select('*')
+          .eq('playlist_id', cp.playlist_id)
+          .eq('student_id', profile.id)
+          .maybeSingle();
+
+        const completedCourseIds = existingProgress?.completed_test_ids || [];
+        
+        if (!completedCourseIds.includes(id)) {
+          const updatedCompleted = [...completedCourseIds, id];
+          
+          if (existingProgress) {
+            await supabase
+              .from('playlist_student_progress')
+              .update({
+                completed_test_ids: updatedCompleted,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', existingProgress.id);
+          } else {
+            await supabase
+              .from('playlist_student_progress')
+              .insert({
+                playlist_id: cp.playlist_id,
+                student_id: profile.id,
+                completed_test_ids: updatedCompleted,
+              });
+          }
+        }
+      }
+
+      // Reload completion status
+      await loadCompletionStatus();
+      setCompletionSuccess(true);
+      
+      // Emit event for playlist view to refresh
+      const event = new CustomEvent('lessonCompleted', { detail: { courseId: id } });
+      window.dispatchEvent(event);
+      
+      // Clear success message after 3 seconds
+      setTimeout(() => {
+        setCompletionSuccess(false);
+      }, 3000);
+    } catch (err: any) {
+      setError(err.message || 'Failed to mark lesson as completed. Please try again.');
+      console.error(err);
+    } finally {
+      setCompleting(false);
     }
   };
 
@@ -125,14 +258,6 @@ export default function LessonView() {
 
     return url;
   };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-gray-600">Loading...</div>
-      </div>
-    );
-  }
 
   if (!course) {
     return (
@@ -183,14 +308,81 @@ export default function LessonView() {
           </div>
 
           <div className="p-6">
-            <h1 className="text-2xl font-bold text-gray-900 mb-2">
-              {course.title}
-            </h1>
+            <div className="flex items-start justify-between mb-2">
+              <h1 className="text-2xl font-bold text-gray-900">
+                {course.title}
+              </h1>
+              {profile?.role === 'student' && playlists.length > 0 && (
+                <div className="flex items-center space-x-3">
+                  {completedPlaylists.length === playlists.length ? (
+                    <div className="flex items-center space-x-2 text-green-600">
+                      <CheckCircle className="w-5 h-5" />
+                      <span className="text-sm font-medium">Completed</span>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={handleCompleteLesson}
+                      disabled={completing}
+                      className="px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
+                    >
+                      {completing ? (
+                        <>
+                          <span>Completing...</span>
+                        </>
+                      ) : (
+                          <>
+                            <CheckCircle className="w-4 h-4" />
+                            <span>Complete Lesson</span>
+                          </>
+                        )}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
             <p className="text-gray-600">
               {course.description || 'No description available.'}
             </p>
+            {completionSuccess && (
+              <div className="mt-4 bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg text-sm">
+                Lesson marked as completed! The next lesson in your playlist is now available.
+              </div>
+            )}
+            {error && (
+              <div className="mt-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+                {error}
+              </div>
+            )}
           </div>
         </div>
+
+        {playlists.length > 0 && (
+          <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
+            <h2 className="text-xl font-bold text-gray-900 mb-4">Playlists</h2>
+            <div className="space-y-3">
+              {playlists.map((playlist) => (
+                <div
+                  key={playlist.id}
+                  className="p-4 border border-gray-200 rounded-lg hover:border-black cursor-pointer transition"
+                  onClick={() => {
+                    const playlistPath = profile?.role === 'student' 
+                      ? `/student/playlist/${playlist.id}`
+                      : `/teacher/playlist/${playlist.id}`;
+                    navigate(playlistPath);
+                  }}
+                >
+                  <h3 className="font-semibold text-black mb-1">{playlist.title}</h3>
+                  {playlist.description && (
+                    <p className="text-sm text-gray-600 mb-2">{playlist.description}</p>
+                  )}
+                  <p className="text-xs text-gray-500">
+                    Mode: {playlist.access_mode === 'sequential' ? 'Sequential' : 'Any'}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="bg-white rounded-xl shadow-sm p-6">
           <h2 className="text-xl font-bold text-gray-900 mb-4">Comments</h2>

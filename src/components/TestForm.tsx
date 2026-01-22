@@ -248,11 +248,12 @@ export default function TestForm() {
         if (variantsError) throw variantsError;
       }
 
+      // Success - navigate outside try-catch to avoid showing error if navigation fails
+      setLoading(false);
       navigate('/teacher/dashboard');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save test. Please try again.');
       console.error(err);
-    } finally {
       setLoading(false);
     }
   };

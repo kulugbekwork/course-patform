@@ -16,18 +16,40 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false); // Start with false to show login immediately
+
+  // Ensure loading is false when profile exists
+  useEffect(() => {
+    if (profile && loading) {
+      setLoading(false);
+    }
+  }, [profile, loading]);
 
   // Check for existing session on mount
   useEffect(() => {
     let cancelled = false;
+    let subscription: { unsubscribe: () => void } | null = null;
     
     const checkSession = async () => {
       try {
-        console.log('Checking session...');
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        // Use Promise.race to add a timeout
+        const sessionPromise = supabase.auth.getSession();
+        const timeoutPromise = new Promise<null>((resolve) => {
+          setTimeout(() => resolve(null), 5000);
+        });
+        
+        const result = await Promise.race([sessionPromise, timeoutPromise]);
         
         if (cancelled) return;
+        
+        // If timeout occurred, result will be null
+        if (!result) {
+          // Session check timed out, but don't show error - just continue
+          setLoading(false);
+          return;
+        }
+        
+        const { data: { session }, error: sessionError } = result as { data: { session: any }, error: any };
         
         if (sessionError) {
           console.error('Session error:', sessionError);
@@ -48,50 +70,60 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           
           if (profileError) {
             console.error('Profile error:', profileError);
+            setLoading(false);
           } else if (data) {
             console.log('Profile loaded:', data);
             setProfile(data);
+            setLoading(false);
           } else {
-            console.log('No profile found for user');
+            setLoading(false);
           }
         } else {
-          console.log('No session found');
+          setLoading(false);
         }
       } catch (error) {
         console.error('Error checking session:', error);
-        if (cancelled) return;
-      } finally {
-        if (!cancelled) {
-          console.log('Setting loading to false');
-          setLoading(false);
-        }
+        setLoading(false);
+        // Don't block UI on errors
       }
     };
     
+    // Check session in background (don't await)
     checkSession();
-    
-    return () => {
-      cancelled = true;
-    };
 
     // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const { data: { subscription: authSubscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (cancelled) return;
+      
       if (session?.user) {
-        const { data } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', session.user.id)
-          .maybeSingle();
-        if (data) {
-          setProfile(data);
+        // Only load profile if we don't already have one (to avoid race conditions with login functions)
+        if (!profile) {
+          const { data } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', session.user.id)
+            .maybeSingle();
+          if (data) {
+            setProfile(data);
+            setLoading(false); // Ensure loading is false when profile is set
+          }
+        } else {
+          // If we already have a profile, ensure loading is false
+          setLoading(false);
         }
       } else {
         setProfile(null);
+        setLoading(false);
       }
     });
+    
+    subscription = authSubscription;
 
     return () => {
-      subscription.unsubscribe();
+      cancelled = true;
+      if (subscription) {
+        subscription.unsubscribe();
+      }
     };
   }, []);
 
@@ -166,10 +198,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (authError) {
+        setLoading(false);
         throw new Error(authError.message);
       }
 
       if (!authData.user) {
+        setLoading(false);
         throw new Error('Failed to create user');
       }
 
@@ -189,16 +223,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (profileError) {
         // If profile creation fails, sign out the user
         await supabase.auth.signOut();
+        setLoading(false);
         throw new Error(profileError.message || 'Failed to create profile');
       }
 
-      // Set the profile
+      // Set the profile and loading in correct order
       setProfile(profileData);
+      setLoading(false);
     } catch (error: any) {
       console.error('Error signing up teacher:', error);
-      throw error;
-    } finally {
       setLoading(false);
+      throw error;
     }
   };
 
@@ -211,10 +246,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (authError) {
+        setLoading(false);
         throw new Error(authError.message);
       }
 
       if (!authData.user) {
+        setLoading(false);
         throw new Error('Authentication failed');
       }
 
@@ -225,22 +262,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .eq('id', authData.user.id)
         .maybeSingle();
 
-      if (profileError) throw profileError;
+      if (profileError) {
+        setLoading(false);
+        throw profileError;
+      }
+      
       if (!profileData) {
+        setLoading(false);
         throw new Error('No profile found for this user. Please sign up first.');
       }
 
       if (profileData.role !== 'teacher') {
         await supabase.auth.signOut();
+        setLoading(false);
         throw new Error('This account is not a teacher account');
       }
 
+      // Set profile and loading in the correct order
       setProfile(profileData);
+      setLoading(false);
     } catch (error: any) {
       console.error('Error logging in teacher:', error);
-      throw error; // Re-throw so the Login component can handle it
-    } finally {
       setLoading(false);
+      throw error; // Re-throw so the Login component can handle it
     }
   };
 
@@ -254,10 +298,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (authError) {
+        setLoading(false);
         throw new Error(authError.message);
       }
 
       if (!authData.user) {
+        setLoading(false);
         throw new Error('Failed to create user');
       }
 
@@ -277,32 +323,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (profileError) {
         // If profile creation fails, sign out the user
         await supabase.auth.signOut();
+        setLoading(false);
         throw new Error(profileError.message || 'Failed to create profile');
       }
 
-      // Set the profile
+      // Set the profile and loading in correct order
       setProfile(profileData);
+      setLoading(false);
     } catch (error: any) {
       console.error('Error signing up student:', error);
-      throw error;
-    } finally {
       setLoading(false);
+      throw error;
     }
   };
 
   const loginStudent = async (email: string, password: string) => {
     setLoading(true);
     try {
+      if (!email || !password) {
+        setLoading(false);
+        throw new Error('Please enter both email and password');
+      }
+
+      // Email + password login for students
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
 
       if (authError) {
-        throw new Error(authError.message);
+        console.error('Auth error:', authError);
+        setLoading(false);
+        // More specific error messages
+        if (authError.message?.includes('Email not confirmed')) {
+          throw new Error('Please check your email and confirm your account before logging in.');
+        }
+        if (authError.message?.includes('Invalid login credentials') || authError.message?.includes('Invalid password')) {
+          throw new Error('Invalid email or password. Please check your credentials.');
+        }
+        throw new Error(authError.message || 'Invalid email or password. Please check your credentials.');
       }
 
       if (!authData.user) {
+        setLoading(false);
         throw new Error('Authentication failed');
       }
 
@@ -313,22 +376,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .eq('id', authData.user.id)
         .maybeSingle();
 
-      if (profileError) throw profileError;
+      if (profileError) {
+        setLoading(false);
+        throw profileError;
+      }
+      
       if (!profileData) {
+        setLoading(false);
         throw new Error('No profile found for this user. Please sign up first.');
       }
 
       if (profileData.role !== 'student') {
         await supabase.auth.signOut();
+        setLoading(false);
         throw new Error('This account is not a student account');
       }
 
+      // Set profile and loading in the correct order
       setProfile(profileData);
+      setLoading(false);
     } catch (error: any) {
       console.error('Error logging in student:', error);
-      throw error; // Re-throw so the Login component can handle it
-    } finally {
       setLoading(false);
+      throw error; // Re-throw so the Login component can handle it
     }
   };
 

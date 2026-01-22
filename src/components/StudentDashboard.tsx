@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, Course } from '../lib/supabase';
-import { BookOpen, FileText, LogOut, Clock, HelpCircle, Star, Users } from 'lucide-react';
+import { BookOpen, FileText, LogOut, Clock, HelpCircle, Star, Users, ListMusic } from 'lucide-react';
 
 interface Test {
   id: string;
@@ -22,42 +22,77 @@ export default function StudentDashboard() {
   const { profile, signOut } = useAuth();
   const [courses, setCourses] = useState<Course[]>([]);
   const [tests, setTests] = useState<Test[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [allPlaylists, setAllPlaylists] = useState<any[]>([]);
+  const [lessonPlaylists, setLessonPlaylists] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'lessons' | 'tests'>('lessons');
 
+  const hasLoadedRef = useRef(false);
+
   useEffect(() => {
-    loadData();
+    // Only load if we haven't loaded yet or if profile changed
+    if (profile?.id && !hasLoadedRef.current) {
+      loadData();
+      hasLoadedRef.current = true;
+    }
   }, [profile?.id]);
 
   const loadData = async () => {
-    setLoading(true);
-    await Promise.all([loadCourses(), loadTests()]);
-    setLoading(false);
+    // Don't reload if data already exists
+    if (courses.length > 0 && tests.length > 0 && hasLoadedRef.current) {
+      return;
+    }
+    
+    await Promise.all([loadCourses(), loadTests(), loadAllPlaylists(), loadLessonPlaylists()]);
   };
 
   const loadCourses = async () => {
     try {
-      // Students can access all courses
-      const { data: coursesData, error: coursesError } = await supabase
-        .from('courses')
-        .select('*')
-        .order('created_at', { ascending: false });
+      // Fetch courses and course_playlists in parallel
+      const [coursesResult, coursePlaylistsResult] = await Promise.all([
+        supabase.from('courses').select('*').order('created_at', { ascending: false }),
+        supabase.from('course_playlists').select('course_id'),
+      ]);
 
-      if (coursesError) {
-        console.error('Error loading courses:', coursesError);
+      if (coursesResult.error) {
+        console.error('Error loading courses:', coursesResult.error);
+        setCourses([]);
         return;
       }
 
-      if (coursesData) {
-        setCourses(coursesData);
+      const allCourses = coursesResult.data;
+      const coursePlaylists = coursePlaylistsResult.data;
+
+      if (!allCourses) {
+        setCourses([]);
+        return;
+      }
+
+      if (coursePlaylists && coursePlaylists.length > 0) {
+        const linkedCourseIds = new Set(coursePlaylists.map(cp => cp.course_id));
+        // Filter out courses that are in playlists
+        const filteredCourses = allCourses.filter(course => !linkedCourseIds.has(course.id));
+        setCourses(filteredCourses);
+      } else {
+        setCourses(allCourses);
       }
     } catch (error) {
       console.error('Error loading courses:', error);
+      setCourses([]);
     }
   };
 
   const loadTests = async () => {
     try {
+      // Get all tests that are in playlists first (single query)
+      const { data: playlistTests } = await supabase
+        .from('playlist_tests')
+        .select('test_id');
+
+      let testIdsInPlaylists = new Set<string>();
+      if (playlistTests) {
+        testIdsInPlaylists = new Set(playlistTests.map(pt => pt.test_id));
+    }
+
       // Students can access all tests
       const { data, error } = await supabase
         .from('tests')
@@ -69,55 +104,149 @@ export default function StudentDashboard() {
         return;
       }
 
-      if (data) {
-        // Fetch question counts and ratings for each test
-        const testsWithDetails = await Promise.all(
-          data.map(async (test) => {
-            // Get question count
-            const { count: questionCount } = await supabase
-              .from('test_questions')
-              .select('*', { count: 'exact', head: true })
-              .eq('test_id', test.id);
-
-            // Get ratings and calculate average
-            const { data: ratingsData } = await supabase
-              .from('test_ratings')
-              .select('rating, user_id')
-              .eq('test_id', test.id);
-
-            let averageRating = 0;
-            let participantsCount = 0;
-            if (ratingsData && ratingsData.length > 0) {
-              const sum = ratingsData.reduce((acc, r) => acc + r.rating, 0);
-              averageRating = sum / ratingsData.length;
-              // Count unique users who have rated (passed the test)
-              const uniqueUsers = new Set(ratingsData.map(r => r.user_id));
-              participantsCount = uniqueUsers.size;
-            }
-
-            return {
-              ...test,
-              question_count: questionCount || 0,
-              average_rating: averageRating,
-              participants_count: participantsCount,
-            };
-          })
-        );
-
-        setTests(testsWithDetails);
+      if (!data || data.length === 0) {
+        setTests([]);
+        return;
       }
+
+      // Filter out tests that are in playlists
+      const testsNotInPlaylists = data.filter(test => !testIdsInPlaylists.has(test.id));
+
+      if (testsNotInPlaylists.length === 0) {
+        setTests([]);
+        return;
+      }
+
+      const testIds = testsNotInPlaylists.map(t => t.id);
+
+      // Batch fetch all question counts at once
+      const { data: questionCountsData } = await supabase
+        .from('test_questions')
+        .select('test_id')
+        .in('test_id', testIds);
+
+      // Batch fetch all ratings at once
+      const { data: allRatingsData } = await supabase
+        .from('test_ratings')
+        .select('test_id, rating, user_id')
+        .in('test_id', testIds);
+
+      // Calculate question counts
+      const questionCountsMap = new Map<string, number>();
+      if (questionCountsData) {
+        questionCountsData.forEach(q => {
+          questionCountsMap.set(q.test_id, (questionCountsMap.get(q.test_id) || 0) + 1);
+        });
+      }
+
+      // Calculate ratings and participants
+      const ratingsMap = new Map<string, { sum: number; count: number; users: Set<string> }>();
+      if (allRatingsData) {
+        allRatingsData.forEach(r => {
+          const existing = ratingsMap.get(r.test_id) || { sum: 0, count: 0, users: new Set<string>() };
+          existing.sum += r.rating;
+          existing.count += 1;
+          existing.users.add(r.user_id);
+          ratingsMap.set(r.test_id, existing);
+        });
+      }
+
+      // Map results
+      const testsWithDetails = testsNotInPlaylists.map(test => {
+        const ratingData = ratingsMap.get(test.id);
+        const questionCount = questionCountsMap.get(test.id) || 0;
+        const averageRating = ratingData && ratingData.count > 0 ? ratingData.sum / ratingData.count : 0;
+        const participantsCount = ratingData ? ratingData.users.size : 0;
+
+        return {
+          ...test,
+          question_count: questionCount,
+          average_rating: averageRating,
+          participants_count: participantsCount,
+        };
+      });
+
+      setTests(testsWithDetails);
     } catch (error) {
       console.error('Error loading tests:', error);
     }
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-gray-600">Loading...</div>
-      </div>
-    );
+  const loadAllPlaylists = async () => {
+    try {
+      // Batch fetch all related data in parallel
+      const [allPlaylistsResult, coursePlaylistsResult, playlistTestsResult] = await Promise.all([
+        supabase.from('playlists').select('*').order('created_at', { ascending: false }),
+        supabase.from('course_playlists').select('playlist_id'),
+        supabase.from('playlist_tests').select('playlist_id'),
+      ]);
+
+      const allPlaylistsData = allPlaylistsResult.data;
+      const coursePlaylistsData = coursePlaylistsResult.data;
+      const playlistTestsData = playlistTestsResult.data;
+
+      if (!allPlaylistsData) {
+        setAllPlaylists([]);
+        return;
+      }
+
+      if (!playlistTestsData || playlistTestsData.length === 0) {
+        setAllPlaylists([]);
+        return;
+      }
+
+      const testPlaylistIds = new Set(playlistTestsData.map(pt => pt.playlist_id));
+      
+      // Filter playlists that contain tests
+      const testPlaylists = allPlaylistsData.filter(p => testPlaylistIds.has(p.id));
+      
+      // Show all test playlists (standalone or linked to courses)
+      setAllPlaylists(testPlaylists);
+    } catch (error) {
+      console.error('Error loading playlists:', error);
+      setAllPlaylists([]);
+    }
+  };
+
+  const loadLessonPlaylists = async () => {
+    try {
+      // Batch fetch in parallel
+      const [coursePlaylistsResult, playlistTestsResult] = await Promise.all([
+        supabase.from('course_playlists').select('playlist_id'),
+        supabase.from('playlist_tests').select('playlist_id'),
+      ]);
+
+      const coursePlaylistsData = coursePlaylistsResult.data;
+      const playlistTestsData = playlistTestsResult.data;
+
+      if (!coursePlaylistsData || coursePlaylistsData.length === 0) {
+        setLessonPlaylists([]);
+        return;
+      }
+
+      const playlistIds = [...new Set(coursePlaylistsData.map(cp => cp.playlist_id))];
+      
+      // Filter out playlists that contain tests
+      const testPlaylistIds = new Set(playlistTestsData?.map(pt => pt.playlist_id) || []);
+      const lessonPlaylistIds = playlistIds.filter(id => !testPlaylistIds.has(id));
+      
+      if (lessonPlaylistIds.length === 0) {
+        setLessonPlaylists([]);
+        return;
+      }
+
+      const { data: playlistsData } = await supabase
+        .from('playlists')
+        .select('*')
+        .in('id', lessonPlaylistIds)
+        .order('created_at', { ascending: false });
+
+      setLessonPlaylists(playlistsData || []);
+    } catch (error) {
+      console.error('Error loading lesson playlists:', error);
+      setLessonPlaylists([]);
   }
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -148,17 +277,17 @@ export default function StudentDashboard() {
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              Lessons ({courses.length})
+              Lessons
             </button>
             <button
               onClick={() => setActiveTab('tests')}
-              className={`flex-1 px-6 py-2 rounded-md font-medium transition ${
+              className={`flex-1 px-3 sm:px-6 py-2 rounded-md font-medium transition text-sm sm:text-base ${
                 activeTab === 'tests'
                   ? 'bg-black text-white'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              Tests ({tests.length})
+              Tests
             </button>
           </div>
         </div>
@@ -167,24 +296,42 @@ export default function StudentDashboard() {
           {/* Lessons Section */}
           {activeTab === 'lessons' && (
             <div>
-              {courses.length === 0 ? (
-                <div className="bg-white rounded-xl shadow-sm p-12 text-center">
+        {courses.length === 0 && lessonPlaylists.length === 0 ? (
+          <div className="bg-white rounded-xl shadow-sm p-12 text-center">
                   <BookOpen className="w-12 h-12 text-gray-400 mx-auto mb-4" />
                   <h3 className="text-lg font-medium text-black mb-2">No lessons yet</h3>
                   <p className="text-gray-600">No lessons available at the moment.</p>
-                </div>
-              ) : (
+          </div>
+        ) : (
                 <div className="bg-white rounded-xl shadow-sm">
                   <div className="divide-y divide-gray-200">
-                    {courses.map((course) => (
+            {courses.map((course) => (
                       <div 
-                        key={course.id} 
+                key={course.id}
                         className="flex items-center justify-between p-3 sm:p-4 cursor-pointer hover:bg-gray-50 transition"
                         onClick={() => navigate(`/student/lesson/${course.id}/view`)}
-                      >
+              >
                         <div className="flex-1 min-w-0">
                           <h3 className="font-semibold text-base sm:text-lg text-gray-900 mb-1">{course.title}</h3>
                           <p className="text-gray-600 text-sm truncate">{course.description || 'No description'}</p>
+                        </div>
+                      </div>
+                    ))}
+                    {lessonPlaylists.map((playlist) => (
+                      <div 
+                        key={playlist.id}
+                        className="flex items-center justify-between p-3 sm:p-4 cursor-pointer hover:bg-gray-50 transition"
+                        onClick={() => navigate(`/student/playlist/${playlist.id}`)}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center space-x-2 mb-1">
+                            <ListMusic className="w-4 h-4 text-gray-500" />
+                            <h3 className="font-semibold text-base sm:text-lg text-gray-900">{playlist.title}</h3>
+                          </div>
+                          <p className="text-gray-600 text-sm truncate">{playlist.description || 'No description'}</p>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Mode: {playlist.access_mode === 'sequential' ? 'Sequential' : 'Any'}
+                          </p>
                         </div>
                       </div>
                     ))}
@@ -197,7 +344,7 @@ export default function StudentDashboard() {
           {/* Tests Section */}
           {activeTab === 'tests' && (
             <div>
-              {tests.length === 0 ? (
+              {tests.length === 0 && allPlaylists.length === 0 ? (
                 <div className="bg-white rounded-xl shadow-sm p-12 text-center">
                   <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
                   <h3 className="text-lg font-medium text-black mb-2">No tests yet</h3>
@@ -279,11 +426,28 @@ export default function StudentDashboard() {
                         </div>
                       </div>
                     ))}
+                    {allPlaylists.map((playlist) => (
+                      <div 
+                        key={playlist.id} 
+                        className="p-3 sm:p-4 cursor-pointer hover:bg-gray-50 transition"
+                        onClick={() => navigate(`/student/playlist/${playlist.id}`)}
+                      >
+                        <div className="flex items-center space-x-2 mb-2">
+                          <ListMusic className="w-5 h-5 text-gray-600" />
+                          <h3 className="font-semibold text-base sm:text-lg text-gray-900">{playlist.title}</h3>
+                        </div>
+                        <p className="text-gray-600 text-sm mb-2">{playlist.description || 'No description'}</p>
+                        <p className="text-xs text-gray-500">
+                          Mode: {playlist.access_mode === 'sequential' ? 'Sequential' : 'Any'}
+                  </p>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
-            </div>
-          )}
+          </div>
+        )}
+
         </div>
       </div>
     </div>

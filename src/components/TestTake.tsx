@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { ArrowLeft, ArrowRight, Star } from 'lucide-react';
@@ -9,6 +9,7 @@ interface Test {
   title: string;
   description: string | null;
   time_minutes: number | null;
+  file_content: string | null;
 }
 
 interface Question {
@@ -25,15 +26,14 @@ interface Variant {
 
 export default function TestTake() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { id } = useParams<{ id: string }>();
   const { profile } = useAuth();
   const [test, setTest] = useState<Test | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [answers, setAnswers] = useState<Record<number, number>>({}); // Store variant index for each question index
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
   const [initialTime, setInitialTime] = useState<number>(0);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [finished, setFinished] = useState(false);
   const [rating, setRating] = useState<number>(0);
@@ -46,13 +46,81 @@ export default function TestTake() {
     timeTaken: number;
   } | null>(null);
 
+  // Use refs to access latest state values in callbacks
+  const questionsRef = useRef(questions);
+  const answersRef = useRef(answers);
+  const initialTimeRef = useRef(initialTime);
+  const timeRemainingRef = useRef(timeRemaining);
+
+  useEffect(() => {
+    questionsRef.current = questions;
+  }, [questions]);
+
+  useEffect(() => {
+    answersRef.current = answers;
+  }, [answers]);
+
+  useEffect(() => {
+    initialTimeRef.current = initialTime;
+  }, [initialTime]);
+
+  useEffect(() => {
+    timeRemainingRef.current = timeRemaining;
+  }, [timeRemaining]);
+
   useEffect(() => {
     if (id) {
       loadTest();
     }
+    
+    // Load answers from document view if coming from there
+    if (location.state?.answers) {
+      setAnswers(location.state.answers);
+    }
+  }, [id, location.state]);
+
+  const handleFinish = useCallback(() => {
+    setFinished((prevFinished) => {
+      if (prevFinished) return prevFinished;
+      
+      // Emit event for playlist completion tracking
+      if (id) {
+        const event = new CustomEvent('testCompleted', { detail: { testId: id } });
+        window.dispatchEvent(event);
+      }
+      
+      // Calculate results using refs to get latest values
+      const currentQuestions = questionsRef.current;
+      const currentAnswers = answersRef.current;
+      const currentInitialTime = initialTimeRef.current;
+      const currentTimeRemaining = timeRemainingRef.current;
+      
+      let correctCount = 0;
+      currentQuestions.forEach((question, questionIndex) => {
+        const userAnswerIndex = currentAnswers[questionIndex];
+        const correctVariantIndex = question.variants.findIndex((v) => v.is_correct);
+        
+        if (userAnswerIndex !== undefined && userAnswerIndex === correctVariantIndex) {
+          correctCount++;
+        }
+      });
+
+      const wrongCount = currentQuestions.length - correctCount;
+      const timeTaken = currentInitialTime - currentTimeRemaining;
+
+      setTestResults({
+        total: currentQuestions.length,
+        correct: correctCount,
+        wrong: wrongCount,
+        timeTaken,
+      });
+      
+      return true;
+    });
   }, [id]);
 
   useEffect(() => {
+    // Start timer when test has started
     if (timeRemaining > 0 && !finished) {
       const timer = setInterval(() => {
         setTimeRemaining((prev) => {
@@ -66,20 +134,18 @@ export default function TestTake() {
 
       return () => clearInterval(timer);
     }
-  }, [timeRemaining, finished]);
+  }, [timeRemaining, finished, handleFinish]);
 
   const loadTest = async () => {
-    setLoading(true);
     const { data: testData, error: fetchError } = await supabase
       .from('tests')
-      .select('*')
+      .select('id, title, description, time_minutes, file_content, teacher_id, created_at, updated_at')
       .eq('id', id)
       .single();
 
     if (fetchError) {
       setError('Failed to load test. Please try again.');
       console.error(fetchError);
-      setLoading(false);
       return;
     }
 
@@ -89,13 +155,15 @@ export default function TestTake() {
       const totalSeconds = timeMinutes * 60;
       setTimeRemaining(totalSeconds);
       setInitialTime(totalSeconds);
+      
+      // Don't auto-show file content - user will click button to view document
 
       // Load questions
       const { data: questionsData } = await supabase
         .from('test_questions')
         .select('*')
         .eq('test_id', id)
-        .order('created_at', { ascending: true });
+        .order('order_index', { ascending: true });
 
       if (questionsData && questionsData.length > 0) {
         const questionIds = questionsData.map(q => q.id);
@@ -103,7 +171,7 @@ export default function TestTake() {
           .from('test_question_variants')
           .select('*')
           .in('question_id', questionIds)
-          .order('created_at', { ascending: true });
+          .order('order_index', { ascending: true });
 
         const questionsWithVariants = questionsData.map(question => ({
           id: question.id,
@@ -120,57 +188,31 @@ export default function TestTake() {
         setQuestions(questionsWithVariants);
       }
     }
-    setLoading(false);
   };
 
-  const handleAnswerChange = (variantId: string) => {
-    const currentQuestion = questions[currentQuestionIndex];
-    if (currentQuestion) {
-      setAnswers((prev) => ({
-        ...prev,
-        [currentQuestion.id]: variantId,
-      }));
-    }
+  const handleAnswerChange = (questionIndex: number, variantIndex: number) => {
+    setAnswers((prev) => ({
+      ...prev,
+      [questionIndex]: variantIndex,
+    }));
   };
 
-  const handleNext = () => {
-    if (currentQuestionIndex < questions.length - 1) {
-      setCurrentQuestionIndex((prev) => prev + 1);
-    }
+  const getVariantLabel = (index: number) => {
+    return String.fromCharCode(65 + index); // A, B, C, D, etc. (uppercase)
   };
+
 
   const handleBack = () => {
-    if (currentQuestionIndex > 0) {
-      setCurrentQuestionIndex((prev) => prev - 1);
+    // Go back to document view if file content exists, otherwise to test view
+    if (test?.file_content) {
+      const basePath = profile?.role === 'student' ? '/student' : '/teacher';
+      navigate(`${basePath}/test/${id}/document`, { state: { answers } });
+    } else {
+      const basePath = profile?.role === 'student' ? '/student' : '/teacher';
+      navigate(`${basePath}/test/${id}/view`);
     }
   };
 
-  const handleFinish = () => {
-    if (finished) return;
-    
-    // Calculate results
-    let correctCount = 0;
-    questions.forEach((question) => {
-      const userAnswer = answers[question.id];
-      const correctVariant = question.variants.find((v) => v.is_correct);
-      
-      if (userAnswer && correctVariant && userAnswer === correctVariant.id) {
-        correctCount++;
-      }
-    });
-
-    const wrongCount = questions.length - correctCount;
-    const timeTaken = initialTime - timeRemaining;
-
-    setTestResults({
-      total: questions.length,
-      correct: correctCount,
-      wrong: wrongCount,
-      timeTaken,
-    });
-    
-    setFinished(true);
-  };
 
   const handleSubmitRating = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -215,14 +257,6 @@ export default function TestTake() {
     return `${mins}m ${secs}s`;
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-gray-600">Loading...</div>
-      </div>
-    );
-  }
-
   if (!test) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -238,7 +272,10 @@ export default function TestTake() {
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="flex items-center h-16">
               <button
-                onClick={() => navigate(`/teacher/test/${id}/view`)}
+                onClick={() => {
+                  const basePath = profile?.role === 'student' ? '/student' : '/teacher';
+                  navigate(`${basePath}/test/${id}/view`);
+                }}
                 className="flex items-center space-x-2 text-black hover:text-gray-600 transition-colors font-medium"
               >
                 <ArrowLeft className="w-5 h-5" />
@@ -342,10 +379,116 @@ export default function TestTake() {
     );
   }
 
-  const currentQuestion = questions[currentQuestionIndex];
-  const isLastQuestion = currentQuestionIndex === questions.length - 1;
-  const selectedAnswer = currentQuestion ? answers[currentQuestion.id] : null;
+  // If file content exists, show button to view document instead of showing it directly
+  if (test?.file_content) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <nav className="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-10">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex items-center justify-between h-16">
+              <button
+                onClick={() => {
+                  const basePath = profile?.role === 'student' ? '/student' : '/teacher';
+                  navigate(`${basePath}/test/${id}/view`);
+                }}
+                className="flex items-center space-x-2 text-black hover:text-gray-600 transition-colors font-medium"
+              >
+                <ArrowLeft className="w-5 h-5" />
+                <span className="hidden sm:inline">Back to Test</span>
+              </button>
+              <div className="text-lg font-semibold text-gray-900">
+                Time: {formatTime(timeRemaining)}
+              </div>
+            </div>
+          </div>
+        </nav>
 
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+            <h2 className="text-xl font-semibold text-gray-900 mb-4">{test.title}</h2>
+            {test.description && (
+              <p className="text-gray-600 mb-6">{test.description}</p>
+            )}
+            <div className="bg-gray-50 rounded-lg p-6 border border-gray-200 text-center">
+              <p className="text-gray-700 mb-4">View the test file and answer questions</p>
+              <button
+                onClick={() => {
+                  if (test.file_content) {
+                    if (test.file_content.startsWith('%PDF')) {
+                      // For PDF, create blob URL and open in new tab
+                      try {
+                        const binaryString = test.file_content;
+                        const bytes = new Uint8Array(binaryString.length);
+                        for (let i = 0; i < binaryString.length; i++) {
+                          bytes[i] = binaryString.charCodeAt(i);
+                        }
+                        const blob = new Blob([bytes], { type: 'application/pdf' });
+                        const url = URL.createObjectURL(blob);
+                        window.open(url, '_blank');
+                        // Clean up URL after a delay
+                        setTimeout(() => URL.revokeObjectURL(url), 100);
+                      } catch (err) {
+                        console.error('Error opening PDF:', err);
+                        alert('Failed to open PDF file');
+                      }
+                    } else {
+                      // For text files, create a text blob and open in new tab
+                      const blob = new Blob([test.file_content], { type: 'text/plain' });
+                      const url = URL.createObjectURL(blob);
+                      window.open(url, '_blank');
+                      setTimeout(() => URL.revokeObjectURL(url), 100);
+                    }
+                  }
+                }}
+                className="px-6 py-3 bg-black text-white rounded-lg hover:bg-gray-800 transition"
+              >
+                View File
+              </button>
+            </div>
+          </div>
+
+          {/* Questions Section at Bottom */}
+          {questions.length > 0 && (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <h2 className="text-xl font-bold text-gray-900 mb-6">Answer Questions</h2>
+              <div className="space-y-6">
+                {questions.map((question, questionIndex) => (
+                  <div key={question.id} className="border border-gray-200 rounded-lg p-4">
+                    <div className="flex items-center space-x-4">
+                      <span className="font-semibold text-gray-900">{questionIndex + 1})</span>
+                      {question.variants.map((variant, variantIndex) => (
+                        <label key={variant.id} className="flex items-center space-x-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name={`question-${questionIndex}`}
+                            checked={answers[questionIndex] === variantIndex}
+                            onChange={() => handleAnswerChange(questionIndex, variantIndex)}
+                            className="w-5 h-5 text-black border-gray-300 focus:ring-black"
+                          />
+                          <span className="text-sm text-gray-700">{getVariantLabel(variantIndex)}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex justify-end mt-6 pt-6 border-t border-gray-200">
+                <button
+                  onClick={handleFinish}
+                  className="px-6 py-2 bg-black text-white rounded-lg hover:bg-gray-800 transition"
+                >
+                  Finish
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Stage 2: Show questions with radio buttons
   return (
     <div className="min-h-screen bg-gray-50">
       <nav className="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-10">
@@ -369,63 +512,46 @@ export default function TestTake() {
       </nav>
 
       <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {currentQuestion && (
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
-            <div className="mb-6">
-              <div className="flex items-center justify-between mb-4">
-                <span className="text-sm text-gray-500">
-                  Question {currentQuestionIndex + 1} of {questions.length}
-                </span>
+        <div className="space-y-6">
+          {questions.map((question, questionIndex) => (
+            <div key={question.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-gray-900">{questionIndex + 1})</span>
+                <div className="flex items-center space-x-4">
+                  {question.variants.map((variant, variantIndex) => (
+                    <label key={variant.id} className="flex items-center space-x-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name={`question-${questionIndex}`}
+                        checked={answers[questionIndex] === variantIndex}
+                        onChange={() => handleAnswerChange(questionIndex, variantIndex)}
+                        className="w-5 h-5 text-black border-gray-300 focus:ring-black"
+                      />
+                      <span className="text-sm text-gray-700">{getVariantLabel(variantIndex)}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
-              <h2 className="text-xl font-semibold text-gray-900">
-                {currentQuestion.question_text}
-              </h2>
             </div>
+          ))}
+        </div>
 
-            <div className="space-y-3 mb-6">
-              {currentQuestion.variants.map((variant) => (
-                <label
-                  key={variant.id}
-                  className={`flex items-center space-x-3 cursor-pointer p-4 rounded-lg border-2 transition ${
-                    selectedAnswer === variant.id
-                      ? 'border-black bg-gray-50'
-                      : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name={`question-${currentQuestion.id}`}
-                    value={variant.id}
-                    checked={selectedAnswer === variant.id}
-                    onChange={() => handleAnswerChange(variant.id)}
-                    className="h-5 w-5 text-black focus:ring-black border-gray-300"
-                  />
-                  <span className="text-gray-700 flex-1">{variant.variant_text}</span>
-                </label>
-              ))}
-            </div>
+        <div className="flex items-center justify-between pt-6 mt-6 border-t border-gray-200">
+          <button
+            onClick={handleBack}
+            className="flex items-center space-x-2 px-4 py-2 text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back</span>
+          </button>
 
-            <div className="flex items-center justify-between pt-4 border-t border-gray-200">
-              <button
-                onClick={handleBack}
-                disabled={currentQuestionIndex === 0}
-                className="flex items-center space-x-2 px-4 py-2 text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span>Back</span>
-              </button>
-
-              <button
-                onClick={isLastQuestion ? handleFinish : handleNext}
-                disabled={!selectedAnswer}
-                className="flex items-center space-x-2 px-6 py-2 bg-black text-white rounded-lg hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <span>{isLastQuestion ? 'Finish Test' : 'Next'}</span>
-                {!isLastQuestion && <ArrowRight className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-        )}
+          <button
+            onClick={handleFinish}
+            className="px-6 py-2 bg-black text-white rounded-lg hover:bg-gray-800 transition"
+          >
+            Finish
+          </button>
+        </div>
       </div>
     </div>
   );

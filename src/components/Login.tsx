@@ -5,7 +5,7 @@ import { BookOpen, Lock, Mail, User } from 'lucide-react';
 
 export default function Login() {
   const navigate = useNavigate();
-  const { signUpTeacher, loginTeacher, signUpStudent, loginStudent, loading, profile } = useAuth();
+  const { signUpTeacher, loginTeacher, loginStudent, loading, profile } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
@@ -15,6 +15,8 @@ export default function Login() {
   const [isSignUp, setIsSignUp] = useState(false);
   const [teacherAccessPassword, setTeacherAccessPassword] = useState('');
   const [teacherAccessGranted, setTeacherAccessGranted] = useState(false);
+  const [studentEmail, setStudentEmail] = useState('');
+  const [studentPassword, setStudentPassword] = useState('');
 
   useEffect(() => {
     if (profile?.role === 'teacher') {
@@ -62,29 +64,21 @@ export default function Login() {
     e.preventDefault();
     setError('');
     
-    if (!email) {
+    if (!studentEmail) {
       setError('Please enter your email');
       return;
     }
     
-    if (!password) {
+    if (!studentPassword) {
       setError('Please enter your password');
       return;
     }
 
-    if (isSignUp && !username) {
-      setError('Please enter a username');
-      return;
-    }
-
     try {
-      if (isSignUp) {
-        await signUpStudent(email, password, username);
-      } else {
-        await loginStudent(email, password);
-      }
+      // Email + password login for students (created by teacher)
+      await loginStudent(studentEmail, studentPassword);
     } catch (err: any) {
-      setError(err.message || (isSignUp ? 'Failed to create account. Please try again.' : 'Invalid email or password. Please try again.'));
+      setError(err.message || 'Invalid email or password. Please check your credentials and try again.');
     }
   };
 
@@ -299,6 +293,11 @@ export default function Login() {
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-slate-100 flex items-center justify-center p-4">
         <div className="w-full max-w-md">
           <div className="bg-white rounded-2xl shadow-xl p-8">
+            <div className="flex items-center justify-center mb-6">
+              <div className="bg-black p-3 rounded-xl">
+                <BookOpen className="w-8 h-8 text-white" />
+              </div>
+            </div>
             <h1 className="text-3xl font-bold text-center text-gray-900 mb-2">
               Course Platform
             </h1>
@@ -307,31 +306,8 @@ export default function Login() {
             </p>
 
             <form onSubmit={handleStudentSubmit} className="space-y-4">
-              {isSignUp && (
-                <div>
-                  <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-2">
-                    Username
-                  </label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <User className="h-5 w-5 text-gray-400" />
-                    </div>
-                    <input
-                      id="username"
-                      type="text"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      className="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-black focus:border-black"
-                      placeholder="Enter your username"
-                      disabled={loading}
-                      autoFocus
-                    />
-                  </div>
-                </div>
-              )}
-
               <div>
-                <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
+                <label htmlFor="studentEmail" className="block text-sm font-medium text-gray-700 mb-2">
                   Email
                 </label>
                 <div className="relative">
@@ -339,20 +315,20 @@ export default function Login() {
                     <Mail className="h-5 w-5 text-gray-400" />
                   </div>
                   <input
-                    id="email"
+                    id="studentEmail"
                     type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    value={studentEmail}
+                    onChange={(e) => setStudentEmail(e.target.value)}
                     className="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-black focus:border-black"
                     placeholder="Enter your email"
                     disabled={loading}
-                    autoFocus={!isSignUp}
+                    autoFocus
                   />
                 </div>
               </div>
 
               <div>
-                <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-2">
+                <label htmlFor="studentPassword" className="block text-sm font-medium text-gray-700 mb-2">
                   Password
                 </label>
                 <div className="relative">
@@ -360,10 +336,10 @@ export default function Login() {
                     <Lock className="h-5 w-5 text-gray-400" />
                   </div>
                   <input
-                    id="password"
+                    id="studentPassword"
                     type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    value={studentPassword}
+                    onChange={(e) => setStudentPassword(e.target.value)}
                     className="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-black focus:border-black"
                     placeholder="Enter your password"
                     disabled={loading}
@@ -380,21 +356,10 @@ export default function Login() {
               <div className="flex flex-col space-y-3">
                 <button
                   type="submit"
-                  disabled={loading || !email || !password || (isSignUp && !username)}
+                  disabled={loading || !studentEmail || !studentPassword}
                   className="w-full bg-black text-white px-4 py-3 rounded-lg hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {loading ? (isSignUp ? 'Creating account...' : 'Logging in...') : (isSignUp ? 'Sign Up' : 'Login')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsSignUp(!isSignUp);
-                    setError('');
-                  }}
-                  disabled={loading}
-                  className="w-full text-sm text-gray-600 hover:text-gray-800 transition"
-                >
-                  {isSignUp ? 'Already have an account? Login' : "Don't have an account? Sign up"}
+                  {loading ? 'Logging in...' : 'Login'}
                 </button>
                 <div className="pt-4 border-t border-gray-200">
                   <button
@@ -402,6 +367,8 @@ export default function Login() {
                     onClick={() => {
                       setIsStudentLogin(false);
                       setIsTeacherLogin(true);
+                      setStudentEmail('');
+                      setStudentPassword('');
                       setEmail('');
                       setPassword('');
                       setUsername('');

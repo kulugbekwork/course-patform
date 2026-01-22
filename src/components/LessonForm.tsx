@@ -16,12 +16,31 @@ export default function LessonForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [loadingLesson, setLoadingLesson] = useState(!!id);
+  const [availablePlaylists, setAvailablePlaylists] = useState<any[]>([]);
+  const [selectedPlaylistIds, setSelectedPlaylistIds] = useState<string[]>([]);
 
   useEffect(() => {
+    if (profile?.id) {
+      loadAvailablePlaylists();
+    }
     if (id) {
       loadLesson();
     }
-  }, [id]);
+  }, [id, profile?.id]);
+
+  const loadAvailablePlaylists = async () => {
+    if (!profile?.id) return;
+    try {
+      const { data } = await supabase
+        .from('playlists')
+        .select('id, title')
+        .eq('teacher_id', profile.id)
+        .order('created_at', { ascending: false });
+      if (data) setAvailablePlaylists(data);
+    } catch (err) {
+      console.error('Error loading playlists:', err);
+    }
+  };
 
   const loadLesson = async () => {
     setLoadingLesson(true);
@@ -38,6 +57,16 @@ export default function LessonForm() {
       setTitle(data.title);
       setDescription(data.description);
       setVideoUrl(data.video_url);
+      
+      // Load associated playlists
+      const { data: coursePlaylists } = await supabase
+        .from('course_playlists')
+        .select('playlist_id')
+        .eq('course_id', id);
+      
+      if (coursePlaylists) {
+        setSelectedPlaylistIds(coursePlaylists.map(cp => cp.playlist_id));
+      }
     }
     setLoadingLesson(false);
   };
@@ -169,6 +198,29 @@ export default function LessonForm() {
         courseId = insertData.id;
       }
 
+      // Update course_playlists
+      if (courseId) {
+        // Delete existing associations
+        await supabase
+          .from('course_playlists')
+          .delete()
+          .eq('course_id', courseId);
+
+        // Insert new associations
+        if (selectedPlaylistIds.length > 0) {
+          const coursePlaylistsToInsert = selectedPlaylistIds.map(playlistId => ({
+            course_id: courseId,
+            playlist_id: playlistId,
+          }));
+
+          const { error: playlistsError } = await supabase
+            .from('course_playlists')
+            .insert(coursePlaylistsToInsert);
+
+          if (playlistsError) throw playlistsError;
+        }
+      }
+
       navigate('/teacher/dashboard');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save lesson. Please try again.');
@@ -255,6 +307,35 @@ export default function LessonForm() {
                 <p className="mt-2 text-sm text-gray-600">
                   Current video: <a href={videoUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{videoUrl}</a>
                 </p>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Playlists (Optional)
+              </label>
+              {availablePlaylists.length === 0 ? (
+                <p className="text-sm text-gray-500">No playlists available. Create a playlist first.</p>
+              ) : (
+                <div className="space-y-2 max-h-48 overflow-y-auto border border-gray-300 rounded-lg p-3">
+                  {availablePlaylists.map((playlist) => (
+                    <label key={playlist.id} className="flex items-center space-x-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedPlaylistIds.includes(playlist.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedPlaylistIds([...selectedPlaylistIds, playlist.id]);
+                          } else {
+                            setSelectedPlaylistIds(selectedPlaylistIds.filter(id => id !== playlist.id));
+                          }
+                        }}
+                        className="text-black focus:ring-black"
+                      />
+                      <span className="text-sm text-gray-700">{playlist.title}</span>
+                    </label>
+                  ))}
+                </div>
               )}
             </div>
 
