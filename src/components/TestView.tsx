@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { supabase, Profile } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { ArrowLeft, Clock, FileText, Users } from 'lucide-react';
+import { ArrowLeft, Clock, FileText } from 'lucide-react';
 
 interface Test {
   id: string;
@@ -154,36 +154,6 @@ export default function TestView() {
                   <p className="text-sm text-gray-600 mb-1">Questions</p>
                   <p className="text-lg font-bold text-gray-900">
                     {questions.length}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Participants Panel */}
-            <div className="bg-gray-50 rounded-lg p-4">
-              <div className="flex items-center space-x-3">
-                <div className="bg-purple-100 rounded-lg p-2 flex-shrink-0">
-                  <Users className="w-5 h-5 text-purple-600" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-gray-600 mb-1">Participants</p>
-                  <p className="text-lg font-bold text-gray-900">
-                    0
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Rating Panel */}
-            <div className="bg-gray-50 rounded-lg p-4">
-              <div className="flex items-center space-x-3">
-                <div className="bg-yellow-100 rounded-lg p-2 flex-shrink-0">
-                  <Star className="w-5 h-5 text-yellow-600" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-gray-600 mb-1">Rating</p>
-                  <p className="text-lg font-bold text-gray-900">
-                    0.00
                   </p>
                 </div>
               </div>

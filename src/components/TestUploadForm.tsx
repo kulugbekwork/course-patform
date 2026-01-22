@@ -288,7 +288,10 @@ export default function TestUploadForm() {
     setLoading(true);
 
     try {
-      if (!fileUrl) {
+      // Determine the file URL to use
+      const finalFileUrl = fileUrl || (isEditMode ? currentFileUrl : '');
+      
+      if (!finalFileUrl) {
         throw new Error('File URL is missing. Please upload a file.');
       }
 
@@ -306,7 +309,7 @@ export default function TestUploadForm() {
             title: title.trim(),
             description: description?.trim() || null,
             time_minutes: timeMinutes,
-            file_url: fileUrl,
+            file_url: finalFileUrl,
             file_content: fileContent || null,
             updated_at: new Date().toISOString(),
           })
@@ -350,7 +353,7 @@ export default function TestUploadForm() {
             description: description?.trim() || null,
             time_minutes: timeMinutes,
             teacher_id: profile.id,
-            file_url: fileUrl,
+            file_url: finalFileUrl,
             file_content: fileContent || null,
           })
           .select()
@@ -433,8 +436,13 @@ export default function TestUploadForm() {
         }
 
         // Ensure at least one variant is marked as correct
-        if (correctIndexInValid === -1 && question.correctVariantIndex !== null) {
-          // If we couldn't find the correct index, default to the first variant
+        if (correctIndexInValid === -1) {
+          // If no correct index found, default to the first variant
+          correctIndexInValid = 0;
+        }
+
+        // Ensure correctIndexInValid is within bounds
+        if (correctIndexInValid < 0 || correctIndexInValid >= variantsToUse.length) {
           correctIndexInValid = 0;
         }
 
