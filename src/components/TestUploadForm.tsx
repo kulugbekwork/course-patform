@@ -273,29 +273,54 @@ export default function TestUploadForm() {
     e.preventDefault();
     setError('');
 
+    console.log('Submitting test with questions:', questions);
+    console.log('File URL:', fileUrl);
+    console.log('Current File URL:', currentFileUrl);
+    console.log('Profile ID:', profile?.id);
+
+    // Validate that we have questions
+    if (questions.length === 0) {
+      setError('Please add at least one question.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
     // Validate that all questions have correct variants
     for (let i = 0; i < questions.length; i++) {
-      if (questions[i].correctVariantIndex === null) {
+      const question = questions[i];
+      console.log(`Question ${i + 1}:`, {
+        correctVariantIndex: question.correctVariantIndex,
+        variantsLength: question.variants.length,
+        variants: question.variants,
+      });
+      
+      if (question.correctVariantIndex === null || question.correctVariantIndex === undefined) {
         setError(`Question ${i + 1} must have a correct answer selected`);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
         return;
       }
-      if (questions[i].variants.length < 2) {
+      if (question.variants.length < 2) {
         setError(`Question ${i + 1} must have at least 2 answer options`);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
         return;
       }
     }
 
     setLoading(true);
+    console.log('Starting test creation process...');
 
     try {
       // Determine the file URL to use
       const finalFileUrl = fileUrl || (isEditMode ? currentFileUrl : '');
+      console.log('Final file URL:', finalFileUrl);
       
       if (!finalFileUrl) {
+        setLoading(false);
         throw new Error('File URL is missing. Please upload a file.');
       }
 
       if (!profile?.id) {
+        setLoading(false);
         throw new Error('You must be logged in to create a test.');
       }
 
@@ -346,6 +371,14 @@ export default function TestUploadForm() {
         }
       } else {
         // Create new test
+        console.log('Creating new test with data:', {
+          title: title.trim(),
+          description: description?.trim() || null,
+          time_minutes: timeMinutes,
+          teacher_id: profile.id,
+          file_url: finalFileUrl,
+        });
+        
         const { data: insertData, error: insertError } = await supabase
           .from('tests')
           .insert({
@@ -361,11 +394,18 @@ export default function TestUploadForm() {
 
         if (insertError) {
           console.error('Test insert error:', insertError);
+          console.error('Insert error details:', {
+            message: insertError.message,
+            code: insertError.code,
+            details: insertError.details,
+            hint: insertError.hint,
+          });
           throw new Error(insertError.message || 'Failed to create test');
         }
         if (!insertData) {
           throw new Error('Failed to create test: No data returned');
         }
+        console.log('Test created successfully, ID:', insertData.id);
         testId = insertData.id;
       }
 
@@ -379,9 +419,12 @@ export default function TestUploadForm() {
       };
 
       // Insert questions and variants
+      console.log(`Starting to insert ${questions.length} questions...`);
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
         const cleanedQuestionText = cleanText(question.questionText) || `Question ${i + 1}`;
+        
+        console.log(`Creating question ${i + 1}/${questions.length}...`);
         
         // Question text can be empty since students will see the file content
 
@@ -395,8 +438,15 @@ export default function TestUploadForm() {
           .select()
           .single();
 
-        if (questionError) throw questionError;
-        if (!questionData) throw new Error('Failed to create question');
+        if (questionError) {
+          console.error(`Error creating question ${i + 1}:`, questionError);
+          throw new Error(`Failed to create question ${i + 1}: ${questionError.message}`);
+        }
+        if (!questionData) {
+          throw new Error(`Failed to create question ${i + 1}: No data returned`);
+        }
+        
+        console.log(`Question ${i + 1} created with ID:`, questionData.id);
 
         // Insert variants (filter out empty ones and clean text)
         const validVariants = question.variants
@@ -453,26 +503,60 @@ export default function TestUploadForm() {
           order_index: j,
         }));
 
+        console.log(`Inserting ${variantsToInsert.length} variants for question ${i + 1}:`, variantsToInsert);
+
         const { error: variantsError } = await supabase
           .from('test_question_variants')
           .insert(variantsToInsert);
 
         if (variantsError) {
           console.error(`Error inserting variants for question ${i + 1}:`, variantsError);
+          console.error('Variants error details:', {
+            message: variantsError.message,
+            code: variantsError.code,
+            details: variantsError.details,
+            hint: variantsError.hint,
+          });
           throw new Error(`Failed to save question ${i + 1} variants: ${variantsError.message}`);
         }
+        
+        console.log(`Question ${i + 1} variants inserted successfully`);
       }
+      
+      console.log('All questions and variants created successfully!');
 
       // Success - navigate outside try-catch to avoid showing error if navigation fails
+      console.log('Test created successfully, navigating...');
       setLoading(false);
       navigate('/teacher/dashboard');
     } catch (err: any) {
       console.error(`Error ${isEditMode ? 'updating' : 'creating'} test:`, err);
-      const errorMessage = err?.message || err?.error?.message || `Failed to ${isEditMode ? 'update' : 'save'} test. Please try again.`;
+      console.error('Error details:', {
+        message: err?.message,
+        error: err?.error,
+        code: err?.code,
+        details: err?.details,
+        hint: err?.hint,
+        stack: err?.stack,
+      });
+      
+      let errorMessage = `Failed to ${isEditMode ? 'update' : 'create'} test. Please try again.`;
+      
+      if (err?.message) {
+        errorMessage = err.message;
+      } else if (err?.error?.message) {
+        errorMessage = err.error.message;
+      } else if (typeof err === 'string') {
+        errorMessage = err;
+      }
+      
       setError(errorMessage);
       setLoading(false);
       // Scroll to top to show error
       window.scrollTo({ top: 0, behavior: 'smooth' });
+      
+      // Also show alert for visibility
+      alert(`Error: ${errorMessage}`);
     }
   };
 
@@ -568,7 +652,7 @@ export default function TestUploadForm() {
                       }
                     }
                   }}
-                  onBlur={(e) => {
+                  onBlur={(_e) => {
                     if (!timeMinutes || timeMinutes < 1) {
                       setTimeMinutes(1);
                     }
@@ -598,7 +682,7 @@ export default function TestUploadForm() {
                       }
                     }
                   }}
-                  onBlur={(e) => {
+                  onBlur={() => {
                     if (!questionCount || questionCount < 1) {
                       setQuestionCount(0);
                     }
@@ -722,7 +806,7 @@ export default function TestUploadForm() {
                       <div className="flex items-center space-x-4">
                         <span className="font-semibold text-gray-900">{questionIndex + 1})</span>
                         <div className="flex items-center space-x-4">
-                          {question.variants.map((variant, variantIndex) => (
+                          {question.variants.map((_variant, variantIndex) => (
                             <label key={variantIndex} className="flex items-center space-x-2 cursor-pointer">
                               <input
                                 type="radio"
@@ -771,7 +855,7 @@ export default function TestUploadForm() {
                 </button>
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || questions.length === 0}
                   className="w-1/2 px-6 py-3 bg-black text-white rounded-lg hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {loading ? (isEditMode ? 'Updating...' : 'Creating...') : (isEditMode ? 'Update Test' : 'Create Test')}
