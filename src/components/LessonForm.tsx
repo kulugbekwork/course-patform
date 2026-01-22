@@ -16,31 +16,12 @@ export default function LessonForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [loadingLesson, setLoadingLesson] = useState(!!id);
-  const [availablePlaylists, setAvailablePlaylists] = useState<any[]>([]);
-  const [selectedPlaylistIds, setSelectedPlaylistIds] = useState<string[]>([]);
 
   useEffect(() => {
-    if (profile?.id) {
-      loadAvailablePlaylists();
-    }
     if (id) {
       loadLesson();
     }
-  }, [id, profile?.id]);
-
-  const loadAvailablePlaylists = async () => {
-    if (!profile?.id) return;
-    try {
-      const { data } = await supabase
-        .from('playlists')
-        .select('id, title')
-        .eq('teacher_id', profile.id)
-        .order('created_at', { ascending: false });
-      if (data) setAvailablePlaylists(data);
-    } catch (err) {
-      console.error('Error loading playlists:', err);
-    }
-  };
+  }, [id]);
 
   const loadLesson = async () => {
     setLoadingLesson(true);
@@ -57,16 +38,6 @@ export default function LessonForm() {
       setTitle(data.title);
       setDescription(data.description);
       setVideoUrl(data.video_url);
-      
-      // Load associated playlists
-      const { data: coursePlaylists } = await supabase
-        .from('course_playlists')
-        .select('playlist_id')
-        .eq('course_id', id);
-      
-      if (coursePlaylists) {
-        setSelectedPlaylistIds(coursePlaylists.map(cp => cp.playlist_id));
-      }
     }
     setLoadingLesson(false);
   };
@@ -75,57 +46,19 @@ export default function LessonForm() {
     // Check if user is authenticated
     const { data: { user }, error: userError } = await supabase.auth.getUser();
     
-    if (!user) {
-      // Try to authenticate using the profile
-      if (profile?.id) {
-        const password = profile.initial_password || 'demo123';
-        const emailDomains = ['@platform.com', '@platform.local'];
-        
-        for (const domain of emailDomains) {
-          const email = `${profile.username}${domain}`;
-          const { error: authError } = await supabase.auth.signInWithPassword({
-            email,
-            password,
-          });
-          
-          if (!authError) {
-            // Retry getting user after authentication
-            const { data: { user: retryUser } } = await supabase.auth.getUser();
-            if (retryUser) {
-              const fileExt = file.name.split('.').pop();
-              const fileName = `${Math.random().toString(36).substring(2)}_${Date.now()}.${fileExt}`;
-              const filePath = `videos/${retryUser.id}/${fileName}`;
+    if (userError || !user) {
+      throw new Error('You must be logged in to upload videos. Please log out and log in again.');
+    }
 
-              const { error: uploadError, data } = await supabase.storage
-                .from('lesson-videos')
-                .upload(filePath, file, {
-                  cacheControl: '3600',
-                  upsert: false
-                });
-
-              if (uploadError) {
-                console.error('Upload error:', uploadError);
-                throw uploadError;
-              }
-
-              const { data: { publicUrl } } = supabase.storage
-                .from('lesson-videos')
-                .getPublicUrl(data.path);
-
-              return publicUrl;
-            }
-          }
-        }
-      }
-      
-      throw new Error('You must be authenticated to upload videos. Please log out and log in again.');
+    if (!profile?.id) {
+      throw new Error('User profile not found. Please log out and log in again.');
     }
 
     const fileExt = file.name.split('.').pop();
     const fileName = `${Math.random().toString(36).substring(2)}_${Date.now()}.${fileExt}`;
     const filePath = `videos/${user.id}/${fileName}`;
 
-    const { error: uploadError, data } = await supabase.storage
+    const { error: uploadError, data: uploadData } = await supabase.storage
       .from('lesson-videos')
       .upload(filePath, file, {
         cacheControl: '3600',
@@ -133,15 +66,37 @@ export default function LessonForm() {
       });
 
     if (uploadError) {
-      console.error('Upload error:', uploadError);
+      console.error('Video upload error:', uploadError);
       console.error('User authenticated:', !!user);
+      console.error('User ID:', user.id);
       console.error('File path:', filePath);
-      throw uploadError;
+      console.error('File size:', file.size);
+      
+      // Provide more specific error messages
+      if (uploadError.message?.includes('Bucket not found')) {
+        throw new Error('Storage bucket not configured. Please contact administrator or run the migration to create the lesson-videos bucket.');
+      }
+      if (uploadError.message?.includes('row-level security')) {
+        throw new Error('Permission denied. Please check that you have permission to upload videos.');
+      }
+      if (uploadError.message?.includes('File size')) {
+        throw new Error('File is too large. Maximum file size is 500MB.');
+      }
+      
+      throw new Error(uploadError.message || 'Failed to upload video. Please try again.');
+    }
+
+    if (!uploadData) {
+      throw new Error('Upload succeeded but no data returned.');
     }
 
     const { data: { publicUrl } } = supabase.storage
       .from('lesson-videos')
-      .getPublicUrl(data.path);
+      .getPublicUrl(uploadData.path);
+
+    if (!publicUrl) {
+      throw new Error('Failed to get public URL for uploaded video.');
+    }
 
     return publicUrl;
   };
@@ -196,29 +151,6 @@ export default function LessonForm() {
         if (insertError) throw insertError;
         if (!insertData) throw new Error('Failed to create lesson');
         courseId = insertData.id;
-      }
-
-      // Update course_playlists
-      if (courseId) {
-        // Delete existing associations
-        await supabase
-          .from('course_playlists')
-          .delete()
-          .eq('course_id', courseId);
-
-        // Insert new associations
-        if (selectedPlaylistIds.length > 0) {
-          const coursePlaylistsToInsert = selectedPlaylistIds.map(playlistId => ({
-            course_id: courseId,
-            playlist_id: playlistId,
-          }));
-
-          const { error: playlistsError } = await supabase
-            .from('course_playlists')
-            .insert(coursePlaylistsToInsert);
-
-          if (playlistsError) throw playlistsError;
-        }
       }
 
       navigate('/teacher/dashboard');
@@ -307,35 +239,6 @@ export default function LessonForm() {
                 <p className="mt-2 text-sm text-gray-600">
                   Current video: <a href={videoUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{videoUrl}</a>
                 </p>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Playlists (Optional)
-              </label>
-              {availablePlaylists.length === 0 ? (
-                <p className="text-sm text-gray-500">No playlists available. Create a playlist first.</p>
-              ) : (
-                <div className="space-y-2 max-h-48 overflow-y-auto border border-gray-300 rounded-lg p-3">
-                  {availablePlaylists.map((playlist) => (
-                    <label key={playlist.id} className="flex items-center space-x-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={selectedPlaylistIds.includes(playlist.id)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedPlaylistIds([...selectedPlaylistIds, playlist.id]);
-                          } else {
-                            setSelectedPlaylistIds(selectedPlaylistIds.filter(id => id !== playlist.id));
-                          }
-                        }}
-                        className="text-black focus:ring-black"
-                      />
-                      <span className="text-sm text-gray-700">{playlist.title}</span>
-                    </label>
-                  ))}
-                </div>
               )}
             </div>
 

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, Course } from '../lib/supabase';
-import { BookOpen, FileText, LogOut, Clock, HelpCircle, Star, Users, ListMusic } from 'lucide-react';
+import { BookOpen, FileText, LogOut, Clock, HelpCircle, Users, ListMusic } from 'lucide-react';
 
 interface Test {
   id: string;
@@ -13,8 +13,6 @@ interface Test {
   created_at: string;
   updated_at: string;
   question_count?: number;
-  average_rating?: number;
-  participants_count?: number;
 }
 
 export default function StudentDashboard() {
@@ -25,6 +23,8 @@ export default function StudentDashboard() {
   const [allPlaylists, setAllPlaylists] = useState<any[]>([]);
   const [lessonPlaylists, setLessonPlaylists] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'lessons' | 'tests'>('lessons');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   const hasLoadedRef = useRef(false);
 
@@ -33,6 +33,8 @@ export default function StudentDashboard() {
     if (profile?.id && !hasLoadedRef.current) {
       loadData();
       hasLoadedRef.current = true;
+    } else if (!profile?.id) {
+      setLoading(false);
     }
   }, [profile?.id]);
 
@@ -42,7 +44,16 @@ export default function StudentDashboard() {
       return;
     }
     
-    await Promise.all([loadCourses(), loadTests(), loadAllPlaylists(), loadLessonPlaylists()]);
+    setLoading(true);
+    setError('');
+    try {
+      await Promise.all([loadCourses(), loadTests(), loadAllPlaylists(), loadLessonPlaylists()]);
+    } catch (err: any) {
+      console.error('Error loading data:', err);
+      setError(err.message || 'Failed to load data. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const loadCourses = async () => {
@@ -56,7 +67,7 @@ export default function StudentDashboard() {
       if (coursesResult.error) {
         console.error('Error loading courses:', coursesResult.error);
         setCourses([]);
-        return;
+        throw new Error('Failed to load courses');
       }
 
       const allCourses = coursesResult.data;
@@ -101,7 +112,7 @@ export default function StudentDashboard() {
 
       if (error) {
         console.error('Error loading tests:', error);
-        return;
+        throw new Error('Failed to load tests');
       }
 
       if (!data || data.length === 0) {
@@ -125,12 +136,6 @@ export default function StudentDashboard() {
         .select('test_id')
         .in('test_id', testIds);
 
-      // Batch fetch all ratings at once
-      const { data: allRatingsData } = await supabase
-        .from('test_ratings')
-        .select('test_id, rating, user_id')
-        .in('test_id', testIds);
-
       // Calculate question counts
       const questionCountsMap = new Map<string, number>();
       if (questionCountsData) {
@@ -139,32 +144,11 @@ export default function StudentDashboard() {
         });
       }
 
-      // Calculate ratings and participants
-      const ratingsMap = new Map<string, { sum: number; count: number; users: Set<string> }>();
-      if (allRatingsData) {
-        allRatingsData.forEach(r => {
-          const existing = ratingsMap.get(r.test_id) || { sum: 0, count: 0, users: new Set<string>() };
-          existing.sum += r.rating;
-          existing.count += 1;
-          existing.users.add(r.user_id);
-          ratingsMap.set(r.test_id, existing);
-        });
-      }
-
       // Map results
-      const testsWithDetails = testsNotInPlaylists.map(test => {
-        const ratingData = ratingsMap.get(test.id);
-        const questionCount = questionCountsMap.get(test.id) || 0;
-        const averageRating = ratingData && ratingData.count > 0 ? ratingData.sum / ratingData.count : 0;
-        const participantsCount = ratingData ? ratingData.users.size : 0;
-
-        return {
-          ...test,
-          question_count: questionCount,
-          average_rating: averageRating,
-          participants_count: participantsCount,
-        };
-      });
+      const testsWithDetails = testsNotInPlaylists.map(test => ({
+        ...test,
+        question_count: questionCountsMap.get(test.id) || 0,
+      }));
 
       setTests(testsWithDetails);
     } catch (error) {
@@ -266,6 +250,27 @@ export default function StudentDashboard() {
       </nav>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Error Display */}
+        {error && (
+          <div className="mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+            {error}
+            <button
+              onClick={() => setError('')}
+              className="ml-2 text-red-600 hover:text-red-800 font-medium"
+            >
+              ×
+            </button>
+          </div>
+        )}
+
+        {/* Loading State */}
+        {loading && (
+          <div className="mb-8 text-center">
+            <div className="inline-block w-8 h-8 border-4 border-gray-300 border-t-black rounded-full animate-spin"></div>
+            <p className="mt-2 text-gray-600">Loading...</p>
+          </div>
+        )}
+
         {/* Toggle Switch */}
         <div className="mb-8">
           <div className="flex bg-gray-100 rounded-lg p-1">
@@ -389,21 +394,6 @@ export default function StudentDashboard() {
                                 <p className="text-xs text-gray-600 mb-0.5">Questions</p>
                                 <p className="text-xs sm:text-sm font-bold text-gray-900">
                                   {test.question_count || 0}
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Rating Card */}
-                          <div className="bg-yellow-50 rounded-lg p-2 sm:p-3">
-                            <div className="flex items-center space-x-1.5 sm:space-x-2">
-                              <div className="bg-yellow-100 rounded-lg p-1 sm:p-1.5 flex-shrink-0">
-                                <Star className="w-3 h-3 sm:w-4 sm:h-4 text-yellow-600 fill-yellow-600" />
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-xs text-gray-600 mb-0.5">Rating</p>
-                                <p className="text-xs sm:text-sm font-bold text-gray-900">
-                                  {test.average_rating && test.average_rating > 0 ? test.average_rating.toFixed(1) : '0.0'}
                                 </p>
                               </div>
                             </div>

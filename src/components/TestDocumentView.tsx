@@ -9,6 +9,7 @@ interface Test {
   title: string;
   description: string | null;
   file_content: string | null;
+  file_url: string | null;
 }
 
 interface Question {
@@ -41,7 +42,7 @@ export default function TestDocumentView() {
   const loadTest = async () => {
     const { data: testData, error: fetchError } = await supabase
       .from('tests')
-      .select('id, title, description, time_minutes, file_content, teacher_id, created_at, updated_at')
+      .select('id, title, description, time_minutes, file_content, file_url, teacher_id, created_at, updated_at')
       .eq('id', id)
       .single();
 
@@ -133,9 +134,24 @@ export default function TestDocumentView() {
       </nav>
 
       <div className="flex-1 flex flex-col max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
-        {/* View File Button - Opens in native browser viewer */}
+        {/* View Document Button - Opens in native browser viewer */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6 text-center">
-          {test.file_content ? (
+          {test.file_url ? (
+            <div>
+              <p className="text-gray-700 mb-4">Click the button below to view the document in your browser</p>
+              <button
+                onClick={() => {
+                  if (test.file_url) {
+                    // Open file URL directly in new tab - browser will handle it natively
+                    window.open(test.file_url, '_blank');
+                  }
+                }}
+                className="px-6 py-3 bg-black text-white rounded-lg hover:bg-gray-800 transition"
+              >
+                View Document
+              </button>
+            </div>
+          ) : test.file_content ? (
             <div>
               <p className="text-gray-700 mb-4">Click the button below to view the test file in your browser</p>
               <button
@@ -174,7 +190,7 @@ export default function TestDocumentView() {
             </div>
           ) : (
             <div className="text-gray-500 py-8">
-              <p>File content not available</p>
+              <p>No document available</p>
             </div>
           )}
         </div>

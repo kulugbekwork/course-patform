@@ -109,31 +109,51 @@ export default function TeacherProfile() {
 
       if (!session) {
         throw new Error('You must be logged in to delete students');
-    }
+      }
+
+      const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      if (!supabaseAnonKey) {
+        throw new Error('Supabase anon key not configured');
+      }
 
       const response = await fetch(`${supabaseUrl}/functions/v1/delete_student`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
+          'apikey': supabaseAnonKey,
         },
         body: JSON.stringify({
           studentId: student.id,
-          teacherId: profile?.id,
         }),
       });
 
+      // Check if response is ok before trying to parse JSON
+      if (!response.ok) {
+        let errorMessage = `Failed to delete student (Status: ${response.status})`;
+        try {
+          const errorResult = await response.json();
+          errorMessage = errorResult.error || errorMessage;
+        } catch (e) {
+          // If JSON parsing fails, use the status text
+          errorMessage = `${errorMessage}: ${response.statusText}`;
+        }
+        throw new Error(errorMessage);
+      }
+
       const result = await response.json();
 
-      if (!response.ok) {
-        throw new Error(result.error || 'Failed to delete student');
-    }
+      if (result.error) {
+        throw new Error(result.error);
+      }
 
       // Reload students list
       await loadStudents();
+      alert('Student deleted successfully');
     } catch (error: any) {
       console.error('Error deleting student:', error);
-      alert(error.message || 'Failed to delete student. Please try again.');
+      const errorMessage = error.message || 'Failed to delete student. Please try again.';
+      alert(`Error: ${errorMessage}\n\nIf this persists, the Edge Function may not be deployed. Please check the Supabase dashboard.`);
     } finally {
       setOpenMenuId(null);
     }

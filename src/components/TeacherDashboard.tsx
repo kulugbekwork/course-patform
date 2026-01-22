@@ -10,6 +10,7 @@ interface Test {
   title: string;
   description: string | null;
   teacher_id: string;
+  file_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -497,7 +498,12 @@ export default function TeacherDashboard() {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  navigate(`/teacher/test/${test.id}`);
+                                  // If test has file_url, route to upload edit page, otherwise regular edit
+                                  if (test.file_url) {
+                                    navigate(`/teacher/test/${test.id}/upload/edit`);
+                                  } else {
+                                    navigate(`/teacher/test/${test.id}`);
+                                  }
                                   setOpenTestMenuId(null);
                                 }}
                                 className="w-full flex items-center space-x-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition"

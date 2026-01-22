@@ -16,28 +16,62 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { studentId, teacherId } = await req.json();
-
-    if (!studentId || !teacherId) {
-      throw new Error("Missing required fields: studentId, teacherId");
+    // Get the authorization header
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: "Missing authorization header" }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-    if (!supabaseUrl || !serviceRoleKey) {
+    if (!supabaseUrl || !supabaseAnonKey || !serviceRoleKey) {
       throw new Error("Missing Supabase configuration");
     }
 
+    // Create a client with the user's token to verify their session
+    const supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
+      global: {
+        headers: { Authorization: authHeader },
+      },
+    });
+
+    // Verify the user's session
+    const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
+
+    if (userError || !user) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized: Invalid session" }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    const { studentId } = await req.json();
+
+    if (!studentId) {
+      throw new Error("Missing required field: studentId");
+    }
+
+    // Use service role client for admin operations
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-    // Verify that the student belongs to the teacher
+    // Verify that the student belongs to the authenticated teacher
     const { data: studentProfile, error: profileCheckError } = await supabase
       .from("profiles")
       .select("id, created_by, role")
       .eq("id", studentId)
       .eq("role", "student")
-      .eq("created_by", teacherId)
+      .eq("created_by", user.id)
       .single();
 
     if (profileCheckError || !studentProfile) {
@@ -49,7 +83,7 @@ Deno.serve(async (req: Request) => {
       .from("profiles")
       .delete()
       .eq("id", studentId)
-      .eq("created_by", teacherId);
+      .eq("created_by", user.id);
 
     if (profileDeleteError) {
       throw new Error(`Failed to delete student profile: ${profileDeleteError.message}`);

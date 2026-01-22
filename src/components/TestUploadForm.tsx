@@ -1,10 +1,8 @@
-import { useState, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useRef, useEffect } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { ArrowLeft, Upload, FileText, Plus, Minus } from 'lucide-react';
-import mammoth from 'mammoth';
-import * as pdfjsLib from 'pdfjs-dist';
 
 interface QuestionFromFile {
   questionNumber: number;
@@ -15,8 +13,10 @@ interface QuestionFromFile {
 
 export default function TestUploadForm() {
   const navigate = useNavigate();
+  const { id } = useParams<{ id?: string }>();
   const { profile } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isEditMode = !!id;
   
   const [stage, setStage] = useState<1 | 2>(1);
   const [title, setTitle] = useState('');
@@ -24,10 +24,101 @@ export default function TestUploadForm() {
   const [timeMinutes, setTimeMinutes] = useState<number>(30);
   const [questionCount, setQuestionCount] = useState<number>(0);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [fileUrl, setFileUrl] = useState<string>('');
+  const [currentFileUrl, setCurrentFileUrl] = useState<string>(''); // For edit mode - existing file URL
   const [fileContent, setFileContent] = useState<string>('');
   const [questions, setQuestions] = useState<QuestionFromFile[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingTest, setLoadingTest] = useState(isEditMode);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
+
+  // Load test data when in edit mode
+  useEffect(() => {
+    if (id) {
+      loadTest();
+    } else {
+      // If not edit mode, ensure loadingTest is false
+      setLoadingTest(false);
+    }
+  }, [id]);
+
+  const loadTest = async () => {
+    if (!id) {
+      setLoadingTest(false);
+      return;
+    }
+    
+    setLoadingTest(true);
+    setError('');
+    
+    try {
+      const { data: testData, error: fetchError } = await supabase
+        .from('tests')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (fetchError) {
+        setError('Failed to load test. Please try again.');
+        console.error(fetchError);
+        setLoadingTest(false);
+        return;
+      }
+
+      if (testData) {
+        setTitle(testData.title || '');
+        setDescription(testData.description || '');
+        setTimeMinutes(testData.time_minutes || 30);
+        setCurrentFileUrl(testData.file_url || '');
+        setFileUrl(testData.file_url || '');
+
+        // Load questions to get the count
+        const { data: questionsData, error: questionsError } = await supabase
+          .from('test_questions')
+          .select('*, test_question_variants(*)')
+          .eq('test_id', id)
+          .order('order_index', { ascending: true });
+
+        if (questionsError) {
+          console.error('Error loading questions:', questionsError);
+        }
+
+        if (questionsData && questionsData.length > 0) {
+          setQuestionCount(questionsData.length);
+          
+          // Load questions with variants for stage 2
+          const loadedQuestions: QuestionFromFile[] = questionsData.map((q, idx) => {
+            const variants = (q.test_question_variants || [])
+              .sort((a: any, b: any) => a.order_index - b.order_index)
+              .map((v: any) => v.variant_text);
+            
+            const correctIndex = (q.test_question_variants || []).findIndex((v: any) => v.is_correct);
+            
+            return {
+              questionNumber: idx + 1,
+              questionText: q.question_text || `Question ${idx + 1}`,
+              variants: variants.length > 0 ? variants : ['', '', ''],
+              correctVariantIndex: correctIndex >= 0 ? correctIndex : null,
+            };
+          });
+          
+          setQuestions(loadedQuestions);
+        } else {
+          // No questions yet, set default
+          setQuestionCount(0);
+          setQuestions([]);
+        }
+      } else {
+        setError('Test not found.');
+      }
+    } catch (err: any) {
+      console.error('Error loading test:', err);
+      setError('Failed to load test. Please try again.');
+    } finally {
+      setLoadingTest(false);
+    }
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -35,233 +126,60 @@ export default function TestUploadForm() {
 
     setError('');
     setUploadedFile(file);
-    setLoading(true);
+    setUploading(true);
 
     try {
-      let content = '';
+      // Check if user is authenticated
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError || !user) {
+        throw new Error('You must be logged in to upload files');
+      }
 
-      // Check file extension
-      const fileName = file.name.toLowerCase();
-      const fileExtension = fileName.split('.').pop();
+      // Generate unique file name
+      const fileExtension = file.name.split('.').pop();
+      const fileName = `${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExtension}`;
+      const filePath = `${user.id}/${fileName}`;
 
-      if (fileExtension === 'pdf') {
-        // Use pdfjs-dist to extract text from PDF files
-        try {
-          // Set up pdfjs worker (using CDN worker for browser compatibility)
-          if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-            pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
-          }
-          
-          const arrayBuffer = await file.arrayBuffer();
-          const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-          
-          let fullText = '';
-          
-          // Extract text from all pages
-          for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-            const page = await pdf.getPage(pageNum);
-            const textContent = await page.getTextContent();
-            const pageText = textContent.items
-              .map((item: any) => item.str)
-              .join(' ');
-            fullText += pageText + '\n';
-          }
-          
-          content = fullText.trim();
-          
-          if (!content || content.length === 0) {
-            throw new Error('The PDF file appears to be empty or contains no extractable text. It may be an image-based PDF or scanned document.');
-          }
-        } catch (err: any) {
-          if (err.message && err.message.includes('empty')) {
-            throw err;
-          }
-          throw new Error(`Failed to extract text from PDF file: ${err.message || 'The file may be corrupted or password-protected.'}`);
-        }
-      } else if (fileExtension === 'docx') {
-        // Use mammoth to extract text from .docx files
-        try {
-          const arrayBuffer = await file.arrayBuffer();
-          const result = await mammoth.extractRawText({ arrayBuffer });
-          content = result.value;
-          
-          if (result.messages.length > 0) {
-            console.warn('Mammoth warnings:', result.messages);
-          }
-        } catch (err) {
-          throw new Error('Failed to extract text from .docx file. Please ensure the file is not corrupted.');
-        }
-      } else {
-        // For all other file types, try to read as text
-        // This will work for .txt, .doc, .pdf, and any text-based files
-        content = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (event) => {
-            try {
-              const result = event.target?.result;
-              if (typeof result === 'string') {
-                // Remove null bytes and other problematic characters
-                const cleanedContent = result.replace(/\0/g, '').replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, '');
-                resolve(cleanedContent);
-              } else {
-                reject(new Error('Failed to read file as text. The file may be in a binary format.'));
-              }
-            } catch (err: any) {
-              reject(new Error(`Failed to read file content: ${err.message || 'Invalid file format'}`));
-            }
-          };
-          reader.onerror = (error) => {
-            reject(new Error('Failed to read file. The file may be corrupted or in a binary format that cannot be read as text.'));
-          };
-          reader.onabort = () => {
-            reject(new Error('File reading was aborted.'));
-          };
-          try {
-            // Try UTF-8 first, fallback to other encodings if needed
-            reader.readAsText(file, 'UTF-8');
-          } catch (err: any) {
-            // If UTF-8 fails, try without specifying encoding
-            try {
-              reader.readAsText(file);
-            } catch (err2: any) {
-              reject(new Error(`Cannot read file: ${err2.message || 'Unsupported file format'}`));
-            }
-          }
+      // Upload file to Supabase Storage
+      const { error: uploadError, data: uploadData } = await supabase.storage
+        .from('test-documents')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: false
         });
+
+      if (uploadError) {
+        // If bucket doesn't exist, try to create it or use a different approach
+        if (uploadError.message?.includes('Bucket not found')) {
+          throw new Error('Storage bucket not configured. Please contact administrator.');
+        }
+        throw uploadError;
       }
 
-      // Check if content is empty or too short
-      if (!content || content.trim().length === 0) {
-        throw new Error('The file appears to be empty or could not be read as text. Please ensure the file contains readable text content.');
-      }
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('test-documents')
+        .getPublicUrl(uploadData.path);
 
-      setFileContent(content);
-      
-      // Parse questions from file
-      parseQuestionsFromFile(content);
+      setFileUrl(publicUrl);
       
       // Reset file input to allow uploading the same or different file again
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to read file content. Please ensure the file contains readable text.');
-      console.error('File read error:', err);
+      setError(err.message || 'Failed to upload file. Please try again.');
+      console.error('File upload error:', err);
       setUploadedFile(null);
-      setFileContent('');
-      setQuestions([]);
-      setQuestionCount(0);
+      setFileUrl('');
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
     } finally {
-      setLoading(false);
+      setUploading(false);
     }
   };
 
-  const parseQuestionsFromFile = (content: string) => {
-    // Enhanced parsing: Look for numbered questions (1., 2., etc.) and variants (a., b., etc.)
-    const lines = content.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-    const parsedQuestions: QuestionFromFile[] = [];
-    let currentQuestion: Partial<QuestionFromFile> | null = null;
-    let currentVariants: string[] = [];
-    let questionCounter = 1;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      
-      // Check if line starts with a number followed by period, parenthesis, or dash (question)
-      const questionMatch = line.match(/^(\d+)[.)\-\s]+(.+)$/);
-      if (questionMatch) {
-        // Save previous question if exists
-        if (currentQuestion && currentQuestion.questionText) {
-          parsedQuestions.push({
-            questionNumber: currentQuestion.questionNumber || questionCounter++,
-            questionText: currentQuestion.questionText.trim(),
-            variants: currentVariants.filter(v => v.trim().length > 0),
-            correctVariantIndex: null,
-          });
-        }
-        
-        // Start new question
-        currentQuestion = {
-          questionNumber: parseInt(questionMatch[1]),
-          questionText: questionMatch[2],
-        };
-        currentVariants = [];
-      } else if (line.match(/^[a-eA-E][.)\-\s]+(.+)$/)) {
-        // Answer variant (a., b., c., etc.)
-        const variantMatch = line.match(/^[a-eA-E][.)\-\s]+(.+)$/);
-        if (variantMatch && currentQuestion) {
-          currentVariants.push(variantMatch[1]);
-        }
-      } else if (line.match(/^[F-Z][.)\-\s]+(.+)$/)) {
-        // Variant with uppercase letter (F-Z, not A-E to avoid confusion)
-        const variantMatch = line.match(/^[F-Z][.)\-\s]+(.+)$/);
-        if (variantMatch && currentQuestion) {
-          currentVariants.push(variantMatch[1]);
-        }
-      } else if (currentQuestion && line.length > 0) {
-        // Continue question text or variant
-        if (currentVariants.length === 0) {
-          // Still in question text - append to question
-          currentQuestion.questionText += ' ' + line;
-        } else {
-          // Might be a variant without letter prefix (if previous line was a variant)
-          // Check if next line is a question or variant
-          const nextLine = i + 1 < lines.length ? lines[i + 1] : '';
-          const isNextQuestion = nextLine.match(/^(\d+)[.)\-\s]+/);
-          const isNextVariant = nextLine.match(/^[a-eA-E][.)\-\s]+/);
-          
-          if (!isNextQuestion && !isNextVariant) {
-            // Continue current variant
-            const lastIndex = currentVariants.length - 1;
-            currentVariants[lastIndex] += ' ' + line;
-          } else {
-            // This might be a new variant without prefix
-            currentVariants.push(line);
-          }
-        }
-      }
-    }
-
-    // Add last question
-    if (currentQuestion && currentQuestion.questionText) {
-      parsedQuestions.push({
-        questionNumber: currentQuestion.questionNumber || questionCounter++,
-        questionText: currentQuestion.questionText.trim(),
-        variants: currentVariants.filter(v => v.trim().length > 0),
-        correctVariantIndex: null,
-      });
-    }
-
-    // If no questions found with numbered format, try alternative parsing
-    if (parsedQuestions.length === 0) {
-      // Try to split by double newlines or question markers
-      const sections = content.split(/\n\s*\n+/).filter(s => s.trim());
-      sections.forEach((section, index) => {
-        const sectionLines = section.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-        if (sectionLines.length > 0) {
-          const questionText = sectionLines[0];
-          const variants = sectionLines.slice(1);
-          
-          if (variants.length >= 2) {
-            parsedQuestions.push({
-              questionNumber: index + 1,
-              questionText: questionText,
-              variants: variants,
-              correctVariantIndex: null,
-            });
-          }
-        }
-      });
-    }
-
-    // Filter out questions with less than 2 variants
-    const validQuestions = parsedQuestions.filter(q => q.variants.length >= 2);
-    setQuestions(validQuestions);
-    // Don't change question count - user must enter it manually
-  };
 
   const handleStage1Submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -272,9 +190,20 @@ export default function TestUploadForm() {
       return;
     }
 
-    if (!uploadedFile) {
+    // In edit mode, allow proceeding with existing file if no new file uploaded
+    if (!isEditMode && (!uploadedFile || !fileUrl)) {
       setError('Please upload a file');
       return;
+    }
+
+    // In edit mode, if no new file uploaded, use existing file URL
+    if (isEditMode && !uploadedFile && !fileUrl && !currentFileUrl) {
+      setError('Please upload a file or keep the existing file');
+      return;
+    }
+
+    if (isEditMode && !uploadedFile && currentFileUrl) {
+      setFileUrl(currentFileUrl);
     }
 
     if (questionCount <= 0) {
@@ -282,20 +211,27 @@ export default function TestUploadForm() {
       return;
     }
 
-    // Create questions array from 1 to n based on questionCount
-    // Each question will have variants a, b, c that user can select
-    const newQuestions: QuestionFromFile[] = [];
-    for (let i = 0; i < questionCount; i++) {
-      // Use parsed question if available, otherwise create empty one
-      const parsedQuestion = questions[i];
-      newQuestions.push({
-        questionNumber: i + 1,
-        questionText: parsedQuestion?.questionText || '',
-        variants: parsedQuestion?.variants || ['', '', ''],
-        correctVariantIndex: null,
-      });
+    // If question count changed, reset questions
+    if (questions.length !== questionCount) {
+      // Create questions array from 1 to n based on questionCount
+      // Each question will have variants a, b, c that user can select
+      const newQuestions: QuestionFromFile[] = [];
+      for (let i = 0; i < questionCount; i++) {
+        // If editing and we have existing questions, try to preserve them
+        if (isEditMode && questions[i]) {
+          newQuestions.push(questions[i]);
+        } else {
+          newQuestions.push({
+            questionNumber: i + 1,
+            questionText: `Question ${i + 1}`,
+            variants: ['', '', ''],
+            correctVariantIndex: null,
+          });
+        }
+      }
+      setQuestions(newQuestions);
     }
-    setQuestions(newQuestions);
+    
     setStage(2);
   };
 
@@ -352,31 +288,83 @@ export default function TestUploadForm() {
     setLoading(true);
 
     try {
-      // Clean file content (remove null bytes and control characters)
-      const cleanFileContent = (content: string): string => {
-        if (!content) return '';
-        return content
-          .replace(/\0/g, '') // Remove null bytes
-          .replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, '') // Remove control characters
-          .trim();
-      };
+      if (!fileUrl) {
+        throw new Error('File URL is missing. Please upload a file.');
+      }
 
-      // Create test
-      const { data: insertData, error: insertError } = await supabase
-        .from('tests')
-        .insert({
-          title,
-          description: description || null,
-          time_minutes: timeMinutes,
-          teacher_id: profile?.id,
-          file_content: cleanFileContent(fileContent),
-        })
-        .select()
-        .single();
+      if (!profile?.id) {
+        throw new Error('You must be logged in to create a test.');
+      }
 
-      if (insertError) throw insertError;
-      if (!insertData) throw new Error('Failed to create test');
-      const testId = insertData.id;
+      let testId: string;
+
+      if (isEditMode && id) {
+        // Update existing test
+        const { data: updateData, error: updateError } = await supabase
+          .from('tests')
+          .update({
+            title: title.trim(),
+            description: description?.trim() || null,
+            time_minutes: timeMinutes,
+            file_url: fileUrl,
+            file_content: fileContent || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', id)
+          .select()
+          .single();
+
+        if (updateError) {
+          console.error('Test update error:', updateError);
+          throw new Error(updateError.message || 'Failed to update test');
+        }
+        if (!updateData) {
+          throw new Error('Failed to update test: No data returned');
+        }
+        testId = id;
+
+        // Delete existing questions and variants
+        const { data: existingQuestions } = await supabase
+          .from('test_questions')
+          .select('id')
+          .eq('test_id', id);
+
+        if (existingQuestions && existingQuestions.length > 0) {
+          const questionIds = existingQuestions.map(q => q.id);
+          await supabase
+            .from('test_question_variants')
+            .delete()
+            .in('question_id', questionIds);
+          
+          await supabase
+            .from('test_questions')
+            .delete()
+            .eq('test_id', id);
+        }
+      } else {
+        // Create new test
+        const { data: insertData, error: insertError } = await supabase
+          .from('tests')
+          .insert({
+            title: title.trim(),
+            description: description?.trim() || null,
+            time_minutes: timeMinutes,
+            teacher_id: profile.id,
+            file_url: fileUrl,
+            file_content: fileContent || null,
+          })
+          .select()
+          .single();
+
+        if (insertError) {
+          console.error('Test insert error:', insertError);
+          throw new Error(insertError.message || 'Failed to create test');
+        }
+        if (!insertData) {
+          throw new Error('Failed to create test: No data returned');
+        }
+        testId = insertData.id;
+      }
 
       // Helper function to clean text (remove null bytes and control characters)
       const cleanText = (text: string): string => {
@@ -444,6 +432,12 @@ export default function TestUploadForm() {
           }
         }
 
+        // Ensure at least one variant is marked as correct
+        if (correctIndexInValid === -1 && question.correctVariantIndex !== null) {
+          // If we couldn't find the correct index, default to the first variant
+          correctIndexInValid = 0;
+        }
+
         const variantsToInsert = variantsToUse.map((variant, j) => ({
           question_id: questionData.id,
           variant_text: variant,
@@ -455,16 +449,22 @@ export default function TestUploadForm() {
           .from('test_question_variants')
           .insert(variantsToInsert);
 
-        if (variantsError) throw variantsError;
+        if (variantsError) {
+          console.error(`Error inserting variants for question ${i + 1}:`, variantsError);
+          throw new Error(`Failed to save question ${i + 1} variants: ${variantsError.message}`);
+        }
       }
 
       // Success - navigate outside try-catch to avoid showing error if navigation fails
       setLoading(false);
       navigate('/teacher/dashboard');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save test. Please try again.');
-      console.error(err);
+    } catch (err: any) {
+      console.error(`Error ${isEditMode ? 'updating' : 'creating'} test:`, err);
+      const errorMessage = err?.message || err?.error?.message || `Failed to ${isEditMode ? 'update' : 'save'} test. Please try again.`;
+      setError(errorMessage);
       setLoading(false);
+      // Scroll to top to show error
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };
 
@@ -479,7 +479,9 @@ export default function TestUploadForm() {
             <ArrowLeft className="w-5 h-5" />
             <span>Back</span>
           </button>
-          <h1 className="text-2xl sm:text-3xl font-bold text-black">Upload Test from File</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-black">
+            {isEditMode ? 'Edit Test from File' : 'Upload Test from File'}
+          </h1>
         </div>
 
         <div className="bg-white rounded-xl shadow-sm border border-gray-200">
@@ -600,7 +602,7 @@ export default function TestUploadForm() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Upload File *
+                  {isEditMode ? 'Change File (Optional)' : 'Upload File *'}
                 </label>
                 <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-black transition">
                   <input
@@ -609,10 +611,15 @@ export default function TestUploadForm() {
                     onChange={handleFileUpload}
                     className="hidden"
                   />
-                  {loading ? (
+                  {loadingTest ? (
                     <div className="space-y-2">
                       <div className="w-12 h-12 border-4 border-gray-300 border-t-black rounded-full animate-spin mx-auto"></div>
-                      <p className="text-sm font-medium text-black">Processing file...</p>
+                      <p className="text-sm font-medium text-black">Loading...</p>
+                    </div>
+                  ) : uploading ? (
+                    <div className="space-y-2">
+                      <div className="w-12 h-12 border-4 border-gray-300 border-t-black rounded-full animate-spin mx-auto"></div>
+                      <p className="text-sm font-medium text-black">Uploading file...</p>
                     </div>
                   ) : uploadedFile ? (
                     <div className="space-y-2">
@@ -631,14 +638,28 @@ export default function TestUploadForm() {
                           type="button"
                           onClick={() => {
                             setUploadedFile(null);
+                            setFileUrl(isEditMode ? currentFileUrl : '');
                             setFileContent('');
-                            setQuestions([]);
-                            setQuestionCount(0);
                             if (fileInputRef.current) fileInputRef.current.value = '';
                           }}
                           className="text-sm text-red-600 hover:text-red-700"
                         >
                           Remove file
+                        </button>
+                      </div>
+                    </div>
+                  ) : (currentFileUrl || fileUrl) && isEditMode ? (
+                    <div className="space-y-2">
+                      <FileText className="w-12 h-12 text-black mx-auto" />
+                      <p className="text-sm font-medium text-black">Current file</p>
+                      <p className="text-xs text-gray-500">File is already uploaded</p>
+                      <div className="flex items-center justify-center space-x-4">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="text-sm text-black hover:text-gray-700 font-medium"
+                        >
+                          Change file
                         </button>
                       </div>
                     </div>
@@ -671,10 +692,10 @@ export default function TestUploadForm() {
                       </button>
                 <button
                   type="submit"
-                  disabled={!uploadedFile || questions.length === 0}
+                  disabled={(!uploadedFile && !currentFileUrl && !isEditMode) || (!fileUrl && !currentFileUrl) || uploading || loadingTest}
                   className="w-1/2 px-6 py-3 bg-black text-white rounded-lg hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Next: Set Correct Answers
+                  Next
                 </button>
               </div>
             </form>
@@ -745,7 +766,7 @@ export default function TestUploadForm() {
                   disabled={loading}
                   className="w-1/2 px-6 py-3 bg-black text-white rounded-lg hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {loading ? 'Creating...' : 'Create Test'}
+                  {loading ? (isEditMode ? 'Updating...' : 'Creating...') : (isEditMode ? 'Update Test' : 'Create Test')}
                 </button>
               </div>
             </form>

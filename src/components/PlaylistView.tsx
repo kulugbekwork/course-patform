@@ -224,8 +224,8 @@ export default function PlaylistView() {
             });
         }
 
-        // Navigate to test
-        navigate(`${basePath}/test/${test.id}/take`);
+        // Navigate to test with playlist ID in state
+        navigate(`${basePath}/test/${test.id}/take`, { state: { playlistId: id } });
       } catch (err: any) {
         console.error('Error updating progress:', err);
       }
@@ -241,7 +241,8 @@ export default function PlaylistView() {
     const basePath = profile?.role === 'student' ? '/student' : '/teacher';
     
     // Don't mark as completed automatically - let the student click "Complete" button in lesson view
-    navigate(`${basePath}/lesson/${course.id}/view`);
+    // Pass playlist ID in state so lesson view knows where to navigate back to
+    navigate(`${basePath}/lesson/${course.id}/view`, { state: { playlistId: id } });
   };
 
   const markTestCompleted = useCallback(async (testId: string) => {

@@ -54,6 +54,7 @@ function AppRoutes() {
         <Route path="/teacher/test/new/mode" element={<TestCreationMode />} />
         <Route path="/teacher/test/new/upload" element={<TestUploadForm />} />
         <Route path="/teacher/test/new" element={<TestForm />} />
+        <Route path="/teacher/test/:id/upload/edit" element={<TestUploadForm />} />
         <Route path="/teacher/test/:id/document" element={<TestDocumentView />} />
         <Route path="/teacher/test/:id/take" element={<TestTake />} />
         <Route path="/teacher/test/:id/view" element={<TestView />} />

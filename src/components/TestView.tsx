@@ -2,23 +2,14 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { supabase, Profile } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { ArrowLeft, Clock, FileText, Users, Star } from 'lucide-react';
-
-interface TestRating {
-  id: string;
-  test_id: string;
-  user_id: string;
-  rating: number;
-  comment: string | null;
-  created_at: string;
-  profile?: Profile;
-}
+import { ArrowLeft, Clock, FileText, Users } from 'lucide-react';
 
 interface Test {
   id: string;
   title: string;
   description: string | null;
   time_minutes: number | null;
+  file_url: string | null;
   created_at: string;
 }
 
@@ -40,52 +31,18 @@ export default function TestView() {
   const { profile } = useAuth();
   const [test, setTest] = useState<Test | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
-  const [ratings, setRatings] = useState<TestRating[]>([]);
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (id) {
       loadTest();
-      loadRatings();
     }
   }, [id]);
-
-  const loadRatings = async () => {
-    if (!id) return;
-
-    const { data: ratingsData, error } = await supabase
-      .from('test_ratings')
-      .select('*')
-      .eq('test_id', id)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('Error loading ratings:', error);
-      return;
-    }
-
-    if (ratingsData) {
-      const userIds = [...new Set(ratingsData.map(r => r.user_id))];
-      const { data: profilesData } = await supabase
-        .from('profiles')
-        .select('*')
-        .in('id', userIds);
-
-      const profilesMap = new Map(profilesData?.map(p => [p.id, p]) || []);
-      
-      const ratingsWithProfiles = ratingsData.map(rating => ({
-        ...rating,
-        profile: profilesMap.get(rating.user_id),
-      }));
-
-      setRatings(ratingsWithProfiles as TestRating[]);
-    }
-  };
 
   const loadTest = async () => {
     const { data: testData, error: fetchError } = await supabase
       .from('tests')
-      .select('*')
+      .select('id, title, description, time_minutes, file_url, created_at')
       .eq('id', id)
       .single();
 
@@ -233,6 +190,21 @@ export default function TestView() {
             </div>
           </div>
 
+          {/* View Document Button for file-uploaded tests */}
+          {test.file_url && (
+            <div className="mb-4">
+              <button
+                onClick={() => {
+                  const basePath = profile?.role === 'student' ? '/student' : '/teacher';
+                  navigate(`${basePath}/test/${id}/document`);
+                }}
+                className="w-full px-8 py-3 bg-gray-100 text-black rounded-lg hover:bg-gray-200 transition font-medium text-lg border border-gray-300"
+              >
+                View Test Document
+              </button>
+            </div>
+          )}
+
           <button
             onClick={handleStartTest}
             className="w-full px-8 py-3 bg-black text-white rounded-lg hover:bg-gray-800 transition font-medium text-lg"
@@ -241,41 +213,6 @@ export default function TestView() {
           </button>
         </div>
 
-        <div className="bg-white rounded-xl shadow-sm p-6">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">Reviews</h2>
-
-          <div className="space-y-4">
-            {ratings.length === 0 ? (
-              <p className="text-gray-500 text-center py-8">No reviews yet.</p>
-            ) : (
-              ratings.map((rating) => (
-                <div key={rating.id} className="border-b border-gray-200 pb-4 last:border-b-0 last:pb-0">
-                  <div className="flex-1">
-                    <div className="font-semibold text-gray-900 mb-2">
-                      {rating.profile?.full_name || rating.profile?.username || 'Anonymous'}
-                    </div>
-                    <div className="flex items-center space-x-1 mb-2">
-                      {[1, 2, 3, 4, 5].map((star) => (
-                        <Star
-                          key={star}
-                          className={`w-4 h-4 ${
-                            star <= rating.rating
-                              ? 'text-yellow-400 fill-yellow-400'
-                              : 'text-gray-300'
-                          }`}
-                        />
-                      ))}
-                      <span className="ml-1 text-sm text-gray-600">({rating.rating}/5)</span>
-                    </div>
-                    {rating.comment && (
-                      <p className="text-gray-700 whitespace-pre-wrap">{rating.comment}</p>
-                    )}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
       </div>
     </div>
   );

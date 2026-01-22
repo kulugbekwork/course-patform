@@ -144,7 +144,18 @@ export default function TestForm() {
     e.preventDefault();
     setError('');
 
+    // Validate that user is logged in
+    if (!profile?.id) {
+      setError('You must be logged in to create a test.');
+      return;
+    }
+
     // Validate questions
+    if (questions.length === 0) {
+      setError('Please add at least one question');
+      return;
+    }
+
     for (let i = 0; i < questions.length; i++) {
       const q = questions[i];
       if (!q.question_text.trim()) {
@@ -178,65 +189,108 @@ export default function TestForm() {
         const { error: updateError } = await supabase
           .from('tests')
           .update({
-            title,
-            description: description || null,
+            title: title.trim(),
+            description: description?.trim() || null,
             time_minutes: timeMinutes,
+            updated_at: new Date().toISOString(),
           })
           .eq('id', id);
 
-        if (updateError) throw updateError;
+        if (updateError) {
+          console.error('Test update error:', updateError);
+          throw new Error(updateError.message || 'Failed to update test');
+        }
       } else {
         // Create new test
         const { data: insertData, error: insertError } = await supabase
           .from('tests')
           .insert({
-            title,
-            description: description || null,
+            title: title.trim(),
+            description: description?.trim() || null,
             time_minutes: timeMinutes,
-            teacher_id: profile?.id,
+            teacher_id: profile.id,
           })
           .select()
           .single();
 
-        if (insertError) throw insertError;
-        if (!insertData) throw new Error('Failed to create test');
+        if (insertError) {
+          console.error('Test insert error:', insertError);
+          throw new Error(insertError.message || 'Failed to create test');
+        }
+        if (!insertData) {
+          throw new Error('Failed to create test: No data returned');
+        }
         testId = insertData.id;
       }
 
       // Delete existing questions if updating
-      if (id) {
-        const { data: existingQuestions } = await supabase
+      if (id && testId) {
+        const { data: existingQuestions, error: existingQuestionsError } = await supabase
           .from('test_questions')
           .select('id')
           .eq('test_id', testId);
 
+        if (existingQuestionsError) {
+          console.error('Error fetching existing questions:', existingQuestionsError);
+          throw new Error('Failed to load existing questions');
+        }
+
         if (existingQuestions && existingQuestions.length > 0) {
           const questionIds = existingQuestions.map(q => q.id);
-          await supabase.from('test_question_variants').delete().in('question_id', questionIds);
-          await supabase.from('test_questions').delete().eq('test_id', testId);
+          
+          // Delete variants first (foreign key constraint)
+          const { error: deleteVariantsError } = await supabase
+            .from('test_question_variants')
+            .delete()
+            .in('question_id', questionIds);
+          
+          if (deleteVariantsError) {
+            console.error('Error deleting variants:', deleteVariantsError);
+            throw new Error('Failed to delete existing question variants');
+          }
+          
+          // Then delete questions
+          const { error: deleteQuestionsError } = await supabase
+            .from('test_questions')
+            .delete()
+            .eq('test_id', testId);
+          
+          if (deleteQuestionsError) {
+            console.error('Error deleting questions:', deleteQuestionsError);
+            throw new Error('Failed to delete existing questions');
+          }
         }
       }
 
       // Insert questions and variants
+      if (!testId) {
+        throw new Error('Test ID is missing');
+      }
+
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
         const { data: questionData, error: questionError } = await supabase
           .from('test_questions')
           .insert({
             test_id: testId,
-            question_text: question.question_text,
+            question_text: question.question_text.trim(),
             order_index: i,
           })
           .select()
           .single();
 
-        if (questionError) throw questionError;
-        if (!questionData) throw new Error('Failed to create question');
+        if (questionError) {
+          console.error(`Error creating question ${i + 1}:`, questionError);
+          throw new Error(`Failed to create question ${i + 1}: ${questionError.message}`);
+        }
+        if (!questionData) {
+          throw new Error(`Failed to create question ${i + 1}: No data returned`);
+        }
 
         // Insert variants
         const variantsToInsert = question.variants.map((variant, j) => ({
           question_id: questionData.id,
-          variant_text: variant.variant_text,
+          variant_text: variant.variant_text.trim(),
           is_correct: variant.is_correct,
           order_index: j,
         }));
@@ -245,16 +299,22 @@ export default function TestForm() {
           .from('test_question_variants')
           .insert(variantsToInsert);
 
-        if (variantsError) throw variantsError;
+        if (variantsError) {
+          console.error(`Error creating variants for question ${i + 1}:`, variantsError);
+          throw new Error(`Failed to save answer options for question ${i + 1}: ${variantsError.message}`);
+        }
       }
 
       // Success - navigate outside try-catch to avoid showing error if navigation fails
       setLoading(false);
       navigate('/teacher/dashboard');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save test. Please try again.');
-      console.error(err);
+    } catch (err: any) {
+      console.error(`Error ${id ? 'updating' : 'creating'} test:`, err);
+      const errorMessage = err?.message || err?.error?.message || `Failed to ${id ? 'update' : 'save'} test. Please try again.`;
+      setError(errorMessage);
       setLoading(false);
+      // Scroll to top to show error
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };
 
@@ -467,7 +527,7 @@ export default function TestForm() {
                   disabled={loading || questions.length === 0}
                   className="w-1/2 px-6 py-3 bg-black text-white rounded-lg hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {loading ? 'Saving...' : id ? 'Update Test' : 'Create Test'}
+                  {loading ? (id ? 'Updating...' : 'Creating...') : (id ? 'Update Test' : 'Create Test')}
                 </button>
               </div>
             </form>
@@ -519,7 +579,7 @@ export default function TestForm() {
               disabled={loading || questions.length === 0}
               className="flex-1 px-4 py-3 bg-black text-white rounded-lg hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? 'Saving...' : id ? 'Update' : 'Create'}
+              {loading ? (id ? 'Updating...' : 'Creating...') : (id ? 'Update Test' : 'Create Test')}
             </button>
           </div>
         </div>

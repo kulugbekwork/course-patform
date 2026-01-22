@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { ArrowLeft, ArrowRight, Star } from 'lucide-react';
+import { ArrowLeft, ArrowRight } from 'lucide-react';
 
 interface Test {
   id: string;
@@ -10,6 +10,7 @@ interface Test {
   description: string | null;
   time_minutes: number | null;
   file_content: string | null;
+  file_url: string | null;
 }
 
 interface Question {
@@ -36,15 +37,13 @@ export default function TestTake() {
   const [initialTime, setInitialTime] = useState<number>(0);
   const [error, setError] = useState('');
   const [finished, setFinished] = useState(false);
-  const [rating, setRating] = useState<number>(0);
-  const [comment, setComment] = useState('');
-  const [submittingRating, setSubmittingRating] = useState(false);
   const [testResults, setTestResults] = useState<{
     total: number;
     correct: number;
     wrong: number;
     timeTaken: number;
   } | null>(null);
+  const [playlistId, setPlaylistId] = useState<string | null>(null);
 
   // Use refs to access latest state values in callbacks
   const questionsRef = useRef(questions);
@@ -77,47 +76,92 @@ export default function TestTake() {
     if (location.state?.answers) {
       setAnswers(location.state.answers);
     }
+    
+    // Store playlist ID if coming from playlist
+    if (location.state?.playlistId) {
+      setPlaylistId(location.state.playlistId);
+    }
   }, [id, location.state]);
 
-  const handleFinish = useCallback(() => {
-    setFinished((prevFinished) => {
-      if (prevFinished) return prevFinished;
+  const handleFinish = useCallback(async () => {
+    const shouldFinish = !finished;
+    if (!shouldFinish) return;
+    
+    setFinished(true);
+    
+    // Emit event for playlist completion tracking
+    if (id) {
+      const event = new CustomEvent('testCompleted', { detail: { testId: id } });
+      window.dispatchEvent(event);
+    }
+    
+    // Calculate results using refs to get latest values
+    const currentQuestions = questionsRef.current;
+    const currentAnswers = answersRef.current;
+    const currentInitialTime = initialTimeRef.current;
+    const currentTimeRemaining = timeRemainingRef.current;
+    
+    let correctCount = 0;
+    currentQuestions.forEach((question, questionIndex) => {
+      const userAnswerIndex = currentAnswers[questionIndex];
+      const correctVariantIndex = question.variants.findIndex((v) => v.is_correct);
       
-      // Emit event for playlist completion tracking
-      if (id) {
-        const event = new CustomEvent('testCompleted', { detail: { testId: id } });
-        window.dispatchEvent(event);
+      if (userAnswerIndex !== undefined && userAnswerIndex === correctVariantIndex) {
+        correctCount++;
       }
-      
-      // Calculate results using refs to get latest values
-      const currentQuestions = questionsRef.current;
-      const currentAnswers = answersRef.current;
-      const currentInitialTime = initialTimeRef.current;
-      const currentTimeRemaining = timeRemainingRef.current;
-      
-      let correctCount = 0;
-      currentQuestions.forEach((question, questionIndex) => {
-        const userAnswerIndex = currentAnswers[questionIndex];
-        const correctVariantIndex = question.variants.findIndex((v) => v.is_correct);
-        
-        if (userAnswerIndex !== undefined && userAnswerIndex === correctVariantIndex) {
-          correctCount++;
-        }
-      });
-
-      const wrongCount = currentQuestions.length - correctCount;
-      const timeTaken = currentInitialTime - currentTimeRemaining;
-
-      setTestResults({
-        total: currentQuestions.length,
-        correct: correctCount,
-        wrong: wrongCount,
-        timeTaken,
-      });
-      
-      return true;
     });
-  }, [id]);
+
+    const wrongCount = currentQuestions.length - correctCount;
+    const timeTaken = currentInitialTime - currentTimeRemaining;
+
+    setTestResults({
+      total: currentQuestions.length,
+      correct: correctCount,
+      wrong: wrongCount,
+      timeTaken,
+    });
+    
+    // If test is part of a playlist, mark as completed and find next test
+    if (playlistId && profile?.role === 'student' && id) {
+      try {
+        // Ensure test is marked as completed
+        const { data: existingProgress } = await supabase
+          .from('playlist_student_progress')
+          .select('*')
+          .eq('playlist_id', playlistId)
+          .eq('student_id', profile.id)
+          .maybeSingle();
+
+        const completedTestIds = existingProgress?.completed_test_ids || [];
+        const updatedCompleted = completedTestIds.includes(id) 
+          ? completedTestIds 
+          : [...completedTestIds, id];
+
+        if (!completedTestIds.includes(id)) {
+          if (existingProgress) {
+            await supabase
+              .from('playlist_student_progress')
+              .update({
+                completed_test_ids: updatedCompleted,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', existingProgress.id);
+          } else {
+            await supabase
+              .from('playlist_student_progress')
+              .insert({
+                playlist_id: playlistId,
+                student_id: profile.id,
+                completed_test_ids: updatedCompleted,
+              });
+          }
+        }
+        // Test is marked as completed, no automatic navigation
+      } catch (err) {
+        console.error('Error finding next test:', err);
+      }
+    }
+  }, [id, playlistId, profile, finished, navigate]);
 
   useEffect(() => {
     // Start timer when test has started
@@ -139,7 +183,7 @@ export default function TestTake() {
   const loadTest = async () => {
     const { data: testData, error: fetchError } = await supabase
       .from('tests')
-      .select('id, title, description, time_minutes, file_content, teacher_id, created_at, updated_at')
+      .select('id, title, description, time_minutes, file_content, file_url, teacher_id, created_at, updated_at')
       .eq('id', id)
       .single();
 
@@ -203,8 +247,8 @@ export default function TestTake() {
 
 
   const handleBack = () => {
-    // Go back to document view if file content exists, otherwise to test view
-    if (test?.file_content) {
+    // Go back to document view if file exists, otherwise to test view
+    if (test?.file_url || test?.file_content) {
       const basePath = profile?.role === 'student' ? '/student' : '/teacher';
       navigate(`${basePath}/test/${id}/document`, { state: { answers } });
     } else {
@@ -214,36 +258,6 @@ export default function TestTake() {
   };
 
 
-  const handleSubmitRating = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!rating || !profile?.id || !id) return;
-
-    setSubmittingRating(true);
-    setError('');
-
-    try {
-      const { error: insertError } = await supabase
-        .from('test_ratings')
-        .insert({
-          test_id: id,
-          user_id: profile.id,
-          rating,
-          comment: comment.trim() || null,
-        });
-
-      if (insertError) {
-        throw insertError;
-      }
-
-      const basePath = profile?.role === 'student' ? '/student' : '/teacher';
-      navigate(`${basePath}/test/${id}/view`);
-    } catch (err: any) {
-      setError(err.message || 'Failed to submit rating. Please try again.');
-      console.error(err);
-    } finally {
-      setSubmittingRating(false);
-    }
-  };
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -273,13 +287,16 @@ export default function TestTake() {
             <div className="flex items-center h-16">
               <button
                 onClick={() => {
-                  const basePath = profile?.role === 'student' ? '/student' : '/teacher';
-                  navigate(`${basePath}/test/${id}/view`);
+                  if (profile?.role === 'student') {
+                    navigate('/student/dashboard');
+                  } else {
+                    navigate(`/teacher/test/${id}/view`);
+                  }
                 }}
                 className="flex items-center space-x-2 text-black hover:text-gray-600 transition-colors font-medium"
               >
                 <ArrowLeft className="w-5 h-5" />
-                <span className="hidden sm:inline">Back to Test</span>
+                <span className="hidden sm:inline">Back</span>
               </button>
             </div>
           </div>
@@ -312,75 +329,13 @@ export default function TestTake() {
               </div>
             </div>
           </div>
-
-          {/* Rating Card */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Rate this test</h2>
-
-            {error && (
-              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm mb-4">
-                {error}
-              </div>
-            )}
-
-            <form onSubmit={handleSubmitRating} className="space-y-6">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-3">
-                  Rating
-                </label>
-                <div className="flex items-center space-x-2">
-                  {[1, 2, 3, 4, 5].map((star) => (
-                    <button
-                      key={star}
-                      type="button"
-                      onClick={() => setRating(star)}
-                      className="focus:outline-none"
-                    >
-                      <Star
-                        className={`w-8 h-8 transition-colors ${
-                          star <= rating
-                            ? 'text-yellow-400 fill-yellow-400'
-                            : 'text-gray-300 hover:text-yellow-300'
-                        }`}
-                      />
-                    </button>
-                  ))}
-                  <span className="ml-2 text-sm text-gray-600">({rating}/5)</span>
-                </div>
-              </div>
-
-              <div>
-                <label htmlFor="comment" className="block text-sm font-medium text-gray-700 mb-2">
-                  Comment (optional)
-                </label>
-                <textarea
-                  id="comment"
-                  value={comment}
-                  onChange={(e) => setComment(e.target.value)}
-                  rows={4}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-black focus:border-transparent transition"
-                  placeholder="Share your thoughts about this test..."
-                />
-              </div>
-
-              <div className="flex justify-end">
-                <button
-                  type="submit"
-                  disabled={!rating || submittingRating}
-                  className="px-6 py-3 bg-black text-white rounded-lg hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {submittingRating ? 'Submitting...' : 'Submit Review'}
-                </button>
-              </div>
-            </form>
-          </div>
         </div>
       </div>
     );
   }
 
-  // If file content exists, show button to view document instead of showing it directly
-  if (test?.file_content) {
+  // If file exists, show button to view document instead of showing it directly
+  if (test?.file_url || test?.file_content) {
     return (
       <div className="min-h-screen bg-gray-50">
         <nav className="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-10">
@@ -388,13 +343,16 @@ export default function TestTake() {
             <div className="flex items-center justify-between h-16">
               <button
                 onClick={() => {
-                  const basePath = profile?.role === 'student' ? '/student' : '/teacher';
-                  navigate(`${basePath}/test/${id}/view`);
+                  if (profile?.role === 'student') {
+                    navigate('/student/dashboard');
+                  } else {
+                    navigate(`/teacher/test/${id}/view`);
+                  }
                 }}
                 className="flex items-center space-x-2 text-black hover:text-gray-600 transition-colors font-medium"
               >
                 <ArrowLeft className="w-5 h-5" />
-                <span className="hidden sm:inline">Back to Test</span>
+                <span className="hidden sm:inline">Back</span>
               </button>
               <div className="text-lg font-semibold text-gray-900">
                 Time: {formatTime(timeRemaining)}
@@ -410,10 +368,14 @@ export default function TestTake() {
               <p className="text-gray-600 mb-6">{test.description}</p>
             )}
             <div className="bg-gray-50 rounded-lg p-6 border border-gray-200 text-center">
-              <p className="text-gray-700 mb-4">View the test file and answer questions</p>
+              <p className="text-gray-700 mb-4">View the test document and answer questions</p>
               <button
                 onClick={() => {
-                  if (test.file_content) {
+                  if (test.file_url) {
+                    // Open file URL directly in new tab - browser will handle it natively
+                    window.open(test.file_url, '_blank');
+                  } else if (test.file_content) {
+                    // Fallback to old file_content method for backward compatibility
                     if (test.file_content.startsWith('%PDF')) {
                       // For PDF, create blob URL and open in new tab
                       try {
@@ -442,7 +404,7 @@ export default function TestTake() {
                 }}
                 className="px-6 py-3 bg-black text-white rounded-lg hover:bg-gray-800 transition"
               >
-                View File
+                View Document
               </button>
             </div>
           </div>
@@ -496,13 +458,16 @@ export default function TestTake() {
           <div className="flex items-center justify-between h-16">
             <button
               onClick={() => {
-                const basePath = profile?.role === 'student' ? '/student' : '/teacher';
-                navigate(`${basePath}/test/${id}/view`);
+                if (profile?.role === 'student') {
+                  navigate('/student/dashboard');
+                } else {
+                  navigate(`/teacher/test/${id}/view`);
+                }
               }}
               className="flex items-center space-x-2 text-black hover:text-gray-600 transition-colors font-medium"
             >
               <ArrowLeft className="w-5 h-5" />
-              <span className="hidden sm:inline">Back to Test</span>
+              <span className="hidden sm:inline">Back</span>
             </button>
             <div className="text-lg font-semibold text-gray-900">
               Time: {formatTime(timeRemaining)}
@@ -512,6 +477,51 @@ export default function TestTake() {
       </nav>
 
       <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* View Document Card - shown if test has a file */}
+        {(test?.file_url || test?.file_content) && (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+            <h2 className="text-xl font-semibold text-gray-900 mb-4">{test.title}</h2>
+            {test.description && (
+              <p className="text-gray-600 mb-4">{test.description}</p>
+            )}
+            <div className="bg-gray-50 rounded-lg p-6 border border-gray-200 text-center">
+              <p className="text-gray-700 mb-4">View the test document to answer questions</p>
+              <button
+                onClick={() => {
+                  if (test.file_url) {
+                    window.open(test.file_url, '_blank');
+                  } else if (test.file_content) {
+                    if (test.file_content.startsWith('%PDF')) {
+                      try {
+                        const binaryString = test.file_content;
+                        const bytes = new Uint8Array(binaryString.length);
+                        for (let i = 0; i < binaryString.length; i++) {
+                          bytes[i] = binaryString.charCodeAt(i);
+                        }
+                        const blob = new Blob([bytes], { type: 'application/pdf' });
+                        const url = URL.createObjectURL(blob);
+                        window.open(url, '_blank');
+                        setTimeout(() => URL.revokeObjectURL(url), 100);
+                      } catch (err) {
+                        console.error('Error opening PDF:', err);
+                        alert('Failed to open PDF file');
+                      }
+                    } else {
+                      const blob = new Blob([test.file_content], { type: 'text/plain' });
+                      const url = URL.createObjectURL(blob);
+                      window.open(url, '_blank');
+                      setTimeout(() => URL.revokeObjectURL(url), 100);
+                    }
+                  }
+                }}
+                className="px-6 py-3 bg-black text-white rounded-lg hover:bg-gray-800 transition"
+              >
+                View Document
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="space-y-6">
           {questions.map((question, questionIndex) => (
             <div key={question.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
